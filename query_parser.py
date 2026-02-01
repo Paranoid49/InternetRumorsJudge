@@ -1,3 +1,4 @@
+import logging
 from typing import Literal
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -5,6 +6,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 import config
+
+logger = logging.getLogger("QueryParser")
 
 
 class QueryAnalysis(BaseModel):
@@ -53,12 +56,16 @@ def build_chain():
 class QueryParser:
     def __init__(self):
         self.chain = build_chain()
-    
+
     def parse(self, query: str) -> QueryAnalysis:
+        logger.info(f"开始解析查询: '{query}'")
         try:
-            return self.chain.invoke({"query": query})
+            result = self.chain.invoke({"query": query})
+            if result:
+                logger.info(f"解析成功: 实体='{result.entity}', 主张='{result.claim}'")
+            return result
         except Exception as e:
-            print(f"❌ 解析失败: {e}")
+            logger.error(f"解析失败: {e}")
             return None
 
 def test_parser():

@@ -1,8 +1,11 @@
+import logging
 from typing import List, Literal, Dict, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 import config
+
+logger = logging.getLogger("EvidenceAnalyzer")
 
 class EvidenceAssessment(BaseModel):
     """单条证据的评估结果"""
@@ -97,8 +100,11 @@ class EvidenceAnalyzer:
     def analyze(self, claim: str, evidence_list: List[Dict]) -> List[EvidenceAssessment]:
         """执行批量分析"""
         if not evidence_list:
+            logger.warning("分析中止: 传入的证据列表为空。")
             return []
 
+        logger.info(f"开始分析 {len(evidence_list)} 条证据，针对主张: '{claim[:50]}...'")
+        
         # 格式化证据文本
         evidence_text_lines = []
         for idx, ev in enumerate(evidence_list, 1):
@@ -113,9 +119,10 @@ class EvidenceAnalyzer:
                 "claim": claim,
                 "evidence_text": formatted_evidence_text
             })
+            logger.info(f"分析成功，返回 {len(result.assessments)} 条评估结果。")
             return result.assessments
         except Exception as e:
-            print(f"❌ 证据分析失败: {e}")
+            logger.error(f"证据分析过程出错: {e}")
             return []
 
 # 保持函数式接口以便兼容现有代码

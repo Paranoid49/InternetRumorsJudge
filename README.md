@@ -1,122 +1,85 @@
 # Internet Rumors Judge (AI 谣言粉碎机)
 
-这是一个基于 RAG (Retrieval-Augmented Generation) 和 LLM 的智能谣言核查系统。它结合了本地知识库检索和大型语言模型的通用知识，提供准确、有据可依的谣言粉碎服务。
+这是一个基于 **RAG (Retrieval-Augmented Generation)** 和 **实时互联网搜索** 的智能谣言核查系统。它不仅能检索本地高质量知识库，还能自动通过互联网获取最新事实，并具备“自我进化”的学习能力。
 
 ## ✨ 主要功能
 
-- **多模式核查**：
-  - **RAG 模式**：优先检索本地构建的高质量谣言知识库（`data/rumors/`），提供可信证据。
-  - **LLM 兜底**：当本地库无相关信息时，自动调用大模型通用知识进行初步判断，并给出置信度提示。
-- **Web 可视化界面**：使用 Gradio 构建的交互式界面，支持谣言核查、历史记录查看和用户反馈。
-- **API 服务化**：提供基于 FastAPI 的标准 REST API，支持流式输出 (SSE/NDJSON)，便于第三方应用集成。
-- **智能反馈闭环**：
-  - **收集**：通过 Web 界面收集用户反馈（正面/负面）。
-  - **分析**：自动清洗、去重、分类反馈数据 (`feedback_analyzer.py`)。
-  - **审核**：提供 CLI 工具 (`feedback_reviewer.py`) 人工审核负面反馈。
-  - **进化**：自动将有效反馈转化为新的知识条目并更新向量数据库 (`knowledge_integrator.py`)。
-- **高性能设计**：
-  - **向量检索**：使用 ChromaDB 进行高效语义搜索。
-  - **智能缓存**：集成 DiskCache，缓存高频查询结果，降低延迟和 Token 消耗。
+- **🚀 混合检索系统 (Hybrid Retrieval)**：
+  - **本地 RAG**：优先检索本地构建的高质量谣言知识库 (`data/rumors/`)，确保核心数据的权威性。
+  - **实时联网搜索**：集成 **Tavily AI** (首选) 和 **DuckDuckGo**。当本地相似度不足时，自动触发全网搜索，获取最新事实。
+  - **智能触发逻辑**：基于向量相似度阈值自动决定是否需要“向外求助”。
+- **🧠 深度证据分析**：
+  - 采用多角度分析模型，识别证据的立场（支持/反对）、权威性及复杂情况（如夸大其词、断章取义、过时信息等）。
+- **🔄 自我进化闭环 (Self-Learning)**：
+  - **自动补齐**：当系统通过联网搜索获得高置信度结论时，会自动将其结构化并回填至本地知识库。
+  - **反馈学习**：支持用户反馈，通过人工审核后自动转化为本地知识。
+- **📊 透明化处理流程**：
+  - 详尽的阶段性日志记录，支持查看每一步的耗时、相似度分值、证据来源等，便于调试和审计。
+- **🌐 多端支持**：
+  - **Web 界面**：使用 Gradio 构建，支持交互式核查与历史记录。
+  - **API 服务**：基于 FastAPI 提供 REST 接口，支持流式输出 (NDJSON)。
+  - **Docker 支持**：一键部署，环境隔离。
 
 ## 🛠️ 安装说明
 
-1. **克隆仓库**
-   ```bash
-   git clone https://github.com/yourusername/internet-rumors-judge.git
-   cd internet-rumors-judge
-   ```
-
-2. **安装依赖**
-   建议使用 Python 3.10+ 环境。
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **配置环境变量**
-   在项目根目录创建 `.env` 文件（可选）或直接设置环境变量。主要需要 LLM 的 API Key。
-   ```bash
-   # Linux/Mac
-   export DASHSCOPE_API_KEY="your_api_key_here"
-   
-   # Windows (PowerShell)
-   $env:DASHSCOPE_API_KEY="your_api_key_here"
-   ```
-   *注意：请在 `config.py` 中确认使用的 API Key 环境变量名称（默认为 `DASHSCOPE_API_KEY`，可根据需要修改）。*
-
-## 🚀 快速开始
-
-### 1. Docker 部署 (推荐)
-这是最简单的部署方式，只需两步：
-
-1. **设置环境变量**
-   在根目录创建 `.env` 文件：
-   ```env
-   DASHSCOPE_API_KEY=your_api_key_here
-   ```
-
-2. **一键启动**
-   ```bash
-   docker-compose up -d
-   ```
-   启动后：
-   - Web 界面: `http://localhost:7860`
-   - API 服务: `http://localhost:8000`
-   - API 文档: `http://localhost:8000/docs`
-
-### 2. 命令行模式 (CLI)
-直接在终端进行简单的谣言核查。
+### 1. 克隆与环境准备
 ```bash
-python main.py
-# 然后根据提示输入谣言内容
+git clone https://github.com/yourusername/internet-rumors-judge.git
+cd internet-rumors-judge
+pip install -r requirements.txt
 ```
 
-### 2. 启动 Web 界面
-启动 Gradio 界面，在浏览器中交互。
+### 2. 配置环境变量
+在项目根目录创建 `.env` 文件：
+```env
+# 必填：通义千问 API Key (或其他 OpenAI 兼容 API)
+DASHSCOPE_API_KEY=your_dashscope_key
+
+# 建议：Tavily AI API Key (用于高质量联网搜索)
+TAVILY_API_KEY=your_tavily_key
+
+# 可选：配置其它模型参数
+```
+
+## 🚀 部署方式
+
+### 方式 A：Docker 部署 (推荐)
 ```bash
+# 一键启动 API 和 Web 服务
+docker-compose up -d
+```
+- **Web 界面**: `http://localhost:7860`
+- **API 服务**: `http://localhost:8000`
+- **API 文档**: `http://localhost:8000/docs`
+
+### 方式 B：本地开发模式
+```bash
+# 启动 Web 界面
 python web_interface.py
-```
-访问地址通常为：`http://127.0.0.1:7860`
 
-### 3. 启动 API 服务
-启动 FastAPI 服务，提供对外接口。
-```bash
+# 启动 API 服务
 python api_service.py
 ```
-- 服务地址：`http://127.0.0.1:8000`
-- API 文档：`http://127.0.0.1:8000/docs`
 
-#### API 调用示例 (流式)
-```python
-import requests
-import json
+## 📂 核心模块说明
 
-url = "http://127.0.0.1:8000/verify-stream"
-payload = {"query": "吃洋葱能治感冒吗？", "use_cache": True}
+- [pipeline.py](file:///app/pipeline.py): **系统大脑**，负责编排解析、检索、分析和总结的全流程。
+- [hybrid_retriever.py](file:///app/hybrid_retriever.py): **智能检索器**，基于相似度阈值自动切换本地 RAG 和 Web 搜索。
+- [web_search_tool.py](file:///app/web_search_tool.py): **联网工具**，封装了 LangChain 版 Tavily 和 DDG 搜索。
+- [evidence_analyzer.py](file:///app/evidence_analyzer.py): **证据分析师**，对搜集到的多来源证据进行交叉验证。
+- [knowledge_integrator.py](file:///app/knowledge_integrator.py): **知识集成器**，负责将新发现的真相沉淀到本地向量库。
 
-response = requests.post(url, json=payload, stream=True)
-for line in response.iter_lines(decode_unicode=True):
-    if line:
-        print(json.loads(line))
-```
+## 🔍 调试与日志
 
-## 📂 项目结构
+系统在运行过程中会输出详细的日志。你可以通过日志观察：
+- 本地检索的最高相似度分值。
+- 是否触发了联网搜索及其原因。
+- 检索到的证据数量（本地 vs 联网）。
+- 自动知识集成的触发状态。
 
-```
-internet_rumors_judge/
-├── api_service.py          # FastAPI 服务端入口
-├── web_interface.py        # Gradio Web 界面入口
-├── main.py                 # CLI 入口 & 核心流程调度
-├── pipeline.py             # 核心逻辑编排 (RumorJudgeEngine)
-├── evidence_retriever.py   # RAG 检索模块 (ChromaDB)
-├── evidence_analyzer.py    # 证据分析与合成模块
-├── truth_summarizer.py     # 最终真相总结模块
-├── feedback_analyzer.py    # 反馈数据分析脚本
-├── feedback_reviewer.py    # 反馈人工审核工具
-├── knowledge_integrator.py # 知识库自动更新工具
-├── config.py               # 项目配置
-├── data/
-│   └── rumors/             # 本地谣言知识库 (TXT文件)
-└── ...
+```bash
+# Docker 环境下查看实时日志
+docker logs rumor-api -f
 ```
 
 ## 📝 许可证

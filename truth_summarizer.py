@@ -53,8 +53,8 @@ class TruthSummarizer:
             ("system", """你是事实核查的最终裁决员。你的任务是基于所有证据分析，给出综合结论。
 
                 **决策逻辑与步骤：**
-                1. **证据概览**：统计支持、反对、中立的证据数量。
-                2. **关键证据评估**：找出权威性最高（4-5分）且相关性高的证据。若权威证据与小道消息冲突，以权威为准。
+                1. **证据概览**：统计支持、反对、中立的证据数量。注意区分本地证据和联网搜索结果。
+                2. **关键证据评估**：找出权威性最高且相关性高的证据。联网搜索结果可能包含新闻报道或官方辟谣，请谨慎评估其真实性。
                 3. **综合推理**：解释证据如何指向结论。
                 4. **定性判断**：
                    - **假**：有明确、可信的证据直接反驳主张。
@@ -103,11 +103,7 @@ class TruthSummarizer:
     def summarize(self, claim: str, assessments: List[EvidenceAssessment]) -> Optional[FinalVerdict]:
         """执行总结"""
         if not assessments:
-            # 修改原有逻辑，不再直接返回 INSUFFICIENT，而是留给调用方处理，或者在这里抛出异常/返回特定状态
-            # 但为了兼容性，如果 assessments 为空且未调用 fallback，这里仍然保持原样比较安全，
-            # 或者调用方应该显式调用 summarize_based_on_knowledge。
-            # 暂时保持原样，新增方法供 pipeline 调用。
-            logger.warning("没有收到证据分析结果，无法生成真相总结")
+            logger.warning("总结中止: 没有收到任何证据评估结果。")
             return FinalVerdict(
                 verdict=VerdictType.INSUFFICIENT,
                 confidence=0,
@@ -115,6 +111,8 @@ class TruthSummarizer:
                 risk_level="低"
             )
 
+        logger.info(f"开始生成真相总结，基于 {len(assessments)} 条证据评估...")
+        
         # 格式化上下文
         evidence_context = []
         for a in assessments:
@@ -132,7 +130,10 @@ class TruthSummarizer:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                return self.chain.invoke({"claim": claim, "evidence_context": evidence_text})
+                result = self.chain.invoke({"claim": claim, "evidence_context": evidence_text})
+                if result:
+                    logger.info(f"总结生成成功: 结论={result.verdict.value}, 置信度={result.confidence}")
+                return result
             except Exception as e:
                 logger.warning(f"真相总结生成尝试 {attempt + 1}/{max_retries} 失败: {e}")
                 if attempt == max_retries - 1:
@@ -142,13 +143,18 @@ class TruthSummarizer:
 
     def summarize_based_on_knowledge(self, claim: str) -> Optional[FinalVerdict]:
         """基于内部知识进行兜底分析"""
+        logger.info(f"开始基于内部知识进行兜底分析: '{claim}'")
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                return self.fallback_chain.invoke({"claim": claim})
+                result = self.fallback_chain.invoke({"claim": claim})
+                if result:
+                    logger.info(f"兜底总结生成成功: 结论={result.verdict.value}")
+                return result
             except Exception as e:
                 logger.warning(f"兜底总结生成尝试 {attempt + 1}/{max_retries} 失败: {e}")
                 if attempt == max_retries - 1:
+                    logger.error("兜底总结最终失败")
                     return None
         return None
 
