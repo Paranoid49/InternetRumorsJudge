@@ -45,7 +45,25 @@
 
 ## 🚀 快速开始
 
-### 1. 命令行模式 (CLI)
+### 1. Docker 部署 (推荐)
+这是最简单的部署方式，只需两步：
+
+1. **设置环境变量**
+   在根目录创建 `.env` 文件：
+   ```env
+   DASHSCOPE_API_KEY=your_api_key_here
+   ```
+
+2. **一键启动**
+   ```bash
+   docker-compose up -d
+   ```
+   启动后：
+   - Web 界面: `http://localhost:7860`
+   - API 服务: `http://localhost:8000`
+   - API 文档: `http://localhost:8000/docs`
+
+### 2. 命令行模式 (CLI)
 直接在终端进行简单的谣言核查。
 ```bash
 python main.py

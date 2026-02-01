@@ -1,5 +1,9 @@
 # config.py
 import os
+from dotenv import load_dotenv
+
+# 加载 .env 文件（如果存在）
+load_dotenv()
 
 # 请在此处替换为你的真实API密钥
 API_KEY = os.environ.get("DASHSCOPE_API_KEY")
