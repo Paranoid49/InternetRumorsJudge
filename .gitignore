@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
+.env
+.env.local
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+
+# Project specific
+.cache/
+vector_db/
+user_feedback.jsonl
+optimization_data/
+reviewed_data/
+evaluation_results.json
+feedback_stats.json
+*.log
+rumors_dataset.json
