@@ -78,7 +78,7 @@ class EvidenceKnowledgeBase:
             )
         return self._vectorstore
 
-    def build(self, chunk_size: int = 500, chunk_overlap: int = 50, force: bool = False):
+    def build(self, chunk_size: int = 500, chunk_overlap: int = 50, force: bool = False, incremental: bool = True):
         """
         构建知识库：加载文档 -> 切分 -> 向量化 -> 存储
         
@@ -86,6 +86,7 @@ class EvidenceKnowledgeBase:
             chunk_size: 文本块大小
             chunk_overlap: 文本块重叠大小
             force: 是否强制重建（会删除原有索引）
+            incremental: 是否增量构建（仅添加新文档），默认为 True
         """
         if force and self.persist_dir.exists():
             logger.warning(f"强制重建，正在删除旧索引: {self.persist_dir}")
@@ -109,7 +110,29 @@ class EvidenceKnowledgeBase:
             logger.warning("未找到任何文档，跳过构建")
             return
 
-        logger.info(f"加载了 {len(documents)} 个文档")
+        # 如果是增量构建且向量库已存在，则只处理新文档
+        if incremental and not force and self.persist_dir.exists():
+            try:
+                # 获取现有文档的来源列表
+                existing_metadatas = self.vectorstore.get()['metadatas']
+                existing_sources = set()
+                for meta in existing_metadatas:
+                    if 'source' in meta:
+                        existing_sources.add(meta['source'])
+                
+                # 过滤出新文档
+                new_documents = [doc for doc in documents if doc.metadata['source'] not in existing_sources]
+                
+                if not new_documents:
+                    logger.info("没有发现新文档，跳过增量构建")
+                    return
+                
+                logger.info(f"发现 {len(new_documents)} 个新文档，正在进行增量更新...")
+                documents = new_documents
+            except Exception as e:
+                logger.error(f"获取现有索引信息失败，将回退到全量更新逻辑: {e}")
+
+        logger.info(f"准备处理 {len(documents)} 个文档")
 
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -121,15 +144,16 @@ class EvidenceKnowledgeBase:
         chunks = text_splitter.split_documents(documents)
         # 过滤掉空文本块，防止 API 报错
         chunks = [c for c in chunks if c.page_content.strip()]
+        
+        if not chunks:
+            logger.info("没有有效的文本块需要添加")
+            return
+            
         logger.info(f"切分出 {len(chunks)} 个有效文本块")
 
-        # Chroma 在 langchain-chroma 中会自动持久化，无需手动调用 persist()
-        Chroma.from_documents(
-            documents=chunks,
-            embedding=self.embeddings,
-            persist_directory=str(self.persist_dir)
-        )
-        logger.info(f"✅ 知识库构建完成，已保存至 {self.persist_dir}")
+        # 将新块添加到向量库中
+        self.vectorstore.add_documents(chunks)
+        logger.info(f"✅ 知识库更新完成，已保存至 {self.persist_dir}")
 
     def get_retriever(self, k: int = 3, score_threshold: Optional[float] = None) -> VectorStoreRetriever:
         """

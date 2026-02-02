@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -121,37 +122,48 @@ class RumorJudgeEngine:
 
     def _auto_integrate_knowledge(self, result: UnifiedVerificationResult):
         """
-        自动知识沉淀：如果通过联网搜索获得了高置信度的结论，将其转化为本地知识。
+        自动知识沉淀：如果通过联网搜索获得了高置信度的结论，将其异步转化为本地知识。
         """
         if result.is_web_search and result.confidence_score >= 85:
-            logger.info(f"触发自动知识沉淀: {result.query} (置信度: {result.confidence_score})")
-            try:
-                # 构造集成所需的内容
-                # 联网结果可能包含多个来源，我们将它们合并作为“证据”传给生成器
-                combined_evidence = "\n\n".join([
-                    f"来源: {ev['metadata']['source']}\n内容: {ev['content']}" 
-                    for ev in result.retrieved_evidence
-                ])
-                
-                content = self.knowledge_integrator.generate_knowledge_content(
-                    query=result.query, 
-                    comment=f"系统自动联网核查结果：\n结论：{result.final_verdict}\n总结：{result.summary_report}\n\n外部参考：\n{combined_evidence}"
-                )
-                
-                if content:
-                    timestamp = int(datetime.now().timestamp())
-                    safe_title = "".join([c for c in result.query if c.isalnum()])[:20]
-                    filename = f"AUTO_{timestamp}_{safe_title}.txt"
-                    file_path = self.knowledge_integrator.rumor_data_dir / filename
+            logger.info(f"符合自动沉淀条件，启动后台集成线程: {result.query}")
+            
+            def background_integration():
+                try:
+                    logger.info("开始执行后台知识沉淀流程...")
+                    # 1. 构造集成内容
+                    combined_evidence = "\n\n".join([
+                        f"来源: {ev['metadata']['source']}\n内容: {ev['content']}" 
+                        for ev in result.retrieved_evidence
+                    ])
                     
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(content)
+                    content = self.knowledge_integrator.generate_knowledge_content(
+                        query=result.query, 
+                        comment=f"系统自动联网核查结果：\n结论：{result.final_verdict}\n总结：{result.summary_report}\n\n外部参考：\n{combined_evidence}"
+                    )
                     
-                    logger.info(f"✅ 自动生成知识文件: {filename}")
-                    # 重新构建向量库（这里可以考虑是否要立即构建，为了体验先立即构建）
-                    self.knowledge_integrator.rebuild_knowledge_base()
-            except Exception as e:
-                logger.error(f"自动知识沉淀失败: {e}")
+                    if content:
+                        timestamp = int(datetime.now().timestamp())
+                        safe_title = "".join([c for c in result.query if c.isalnum()])[:20]
+                        filename = f"AUTO_{timestamp}_{safe_title}.txt"
+                        file_path = self.knowledge_integrator.rumor_data_dir / filename
+                        
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        
+                        logger.info(f"✅ 自动生成知识文件: {filename}")
+                        
+                        # 2. 增量重构向量库
+                        logger.info("开始增量更新向量知识库...")
+                        self.knowledge_integrator.rebuild_knowledge_base()
+                        logger.info("后台知识集成与重构全部完成！")
+                except Exception as e:
+                    logger.error(f"后台知识集成失败: {e}")
+
+            # 启动线程
+            thread = threading.Thread(target=background_integration)
+            thread.daemon = True
+            thread.start()
+            logger.info("已将集成任务切换至后台。")
 
     def run(self, query: str, use_cache: bool = True) -> UnifiedVerificationResult:
         """执行完整的核查流程"""
@@ -205,19 +217,27 @@ class RumorJudgeEngine:
         retrieval_start = datetime.now()
         logger.info("进入混合证据检索阶段...")
         try:
-            # 构造多重检索词：解析后的 实体+主张 以及 原始查询，以提高 text-embedding-v4 的匹配率
+            # 步骤 A: 收集所有可能的本地证据
+            local_docs = []
+            
+            # 1. 尝试解析词检索
             parsed_query = f"{result.entity} {result.claim}" if result.entity and result.claim else ""
+            if parsed_query:
+                logger.info(f"尝试解析词本地检索: '{parsed_query}'")
+                local_docs.extend(self.hybrid_retriever.search_local(parsed_query))
+            
+            # 2. 尝试原始查询词本地检索
+            if not local_docs or parsed_query != query:
+                logger.info(f"尝试原始查询词本地检索: '{query}'")
+                local_docs.extend(self.hybrid_retriever.search_local(query))
+            
+            # 3. 汇总本地结果并去重
+            unique_local_docs = self.hybrid_retriever._deduplicate_docs(local_docs)
+            
+            # 步骤 B: 调用混合检索（传入已有的本地文档，避免重复搜索）
+            # search_hybrid 会根据传入的文档相似度决定是否触发联网
             search_query = parsed_query if parsed_query else query
-            
-            # 使用混合检索器
-            documents = self.hybrid_retriever.invoke(search_query)
-            
-            # 如果本地解析词检索效果不佳，且原始查询不同，尝试用原始查询补测一次
-            if not any(doc.metadata.get('type') == 'local' for doc in documents) and parsed_query and parsed_query != query:
-                logger.info("解析词检索未命中本地库，尝试使用原始查询词补测...")
-                extra_docs = self.hybrid_retriever.invoke(query)
-                # 合并并去重
-                documents = self.hybrid_retriever._deduplicate_docs(documents + extra_docs)
+            documents = self.hybrid_retriever.search_hybrid(search_query, existing_local_docs=unique_local_docs)
             
             # 更新结果元数据
             result.is_web_search = any(doc.metadata.get('type') == 'web' for doc in documents)

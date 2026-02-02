@@ -21,7 +21,7 @@ class HybridRetriever(BaseRetriever):
     local_kb: Any = None
     web_tool: Any = None
     min_local_similarity: float = 0.4  # 针对 v4 模型调优：相似度达到 0.4 即视为本地有高质量证据，不再触发联网
-    max_results: int = 5
+    max_results: int = 3 # 降低数量以提升分析速度
 
     def __init__(self, local_kb: EvidenceKnowledgeBase, web_tool: WebSearchTool, **kwargs):
         # BaseRetriever 是 Pydantic 模型，需要通过 super().__init__ 初始化
@@ -29,16 +29,14 @@ class HybridRetriever(BaseRetriever):
 
     def _get_relevant_documents(self, query: str) -> List[Document]:
         """核心检索逻辑 (LangChain 标准接口)"""
-        logger.info(f"混合检索启动: '{query}'")
-        all_docs = []
-        
-        # 1. 本地检索
-        logger.info("正在执行本地向量库检索...")
+        return self.search_hybrid(query)
+
+    def search_local(self, query: str) -> List[Document]:
+        """仅执行本地检索"""
+        logger.info(f"仅本地检索: '{query}'")
         local_results = self.local_kb.search(query, k=self.max_results)
         
-        # 转换为 Document 对象
         local_docs = []
-        max_similarity = 0.0
         for res in local_results:
             doc = Document(
                 page_content=res['full_text'],
@@ -50,20 +48,28 @@ class HybridRetriever(BaseRetriever):
                 }
             )
             local_docs.append(doc)
-            max_similarity = max(max_similarity, res['similarity'])
+        return local_docs
+
+    def search_hybrid(self, query: str, existing_local_docs: List[Document] = None) -> List[Document]:
+        """执行混合检索逻辑"""
+        logger.info(f"混合检索启动: '{query}'")
+        all_docs = existing_local_docs if existing_local_docs else []
         
-        logger.info(f"本地检索完成，找到 {len(local_docs)} 条证据，最高相似度: {max_similarity:.4f}")
-        all_docs.extend(local_docs)
+        # 1. 如果没有传入现成的本地结果，先搜本地
+        if not all_docs:
+            all_docs = self.search_local(query)
+        
+        max_similarity = max([d.metadata['similarity'] for d in all_docs]) if all_docs else 0.0
+        logger.info(f"本地检索完成，最高相似度: {max_similarity:.4f}")
         
         # 2. 判断是否需要联网搜索
-        # 条件：本地没结果，或者最相关的结果相似度也低于阈值
         should_search_web = (
-            len(local_docs) == 0 or 
+            len(all_docs) == 0 or 
             max_similarity < self.min_local_similarity
         )
         
         if should_search_web:
-            reason = "本地无结果" if len(local_docs) == 0 else f"相似度 {max_similarity:.2f} 低于阈值 {self.min_local_similarity}"
+            reason = "本地无结果" if len(all_docs) == 0 else f"相似度 {max_similarity:.2f} 低于阈值 {self.min_local_similarity}"
             logger.info(f"触发联网搜索机制 (原因: {reason})")
             web_results = self.web_tool.search(query)
             
