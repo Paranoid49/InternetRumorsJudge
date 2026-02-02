@@ -20,7 +20,7 @@ class HybridRetriever(BaseRetriever):
     
     local_kb: Any = None
     web_tool: Any = None
-    min_local_similarity: float = 0.55  # 触发联网搜索的本地相似度阈值
+    min_local_similarity: float = 0.4  # 针对 v4 模型调优：相似度达到 0.4 即视为本地有高质量证据，不再触发联网
     max_results: int = 5
 
     def __init__(self, local_kb: EvidenceKnowledgeBase, web_tool: WebSearchTool, **kwargs):

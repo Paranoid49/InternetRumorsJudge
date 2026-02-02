@@ -3,10 +3,8 @@ langchain-openai
 pydantic
 langchain
 langchain-community
-langchain-huggingface
 langchain-chroma
 langchain-text-splitters
-sentence-transformers
 diskcache
 gradio
 fastapi

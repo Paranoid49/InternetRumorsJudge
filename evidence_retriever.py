@@ -11,7 +11,7 @@ from langchain_chroma import Chroma
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStoreRetriever
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
@@ -40,30 +40,27 @@ class EvidenceKnowledgeBase:
         self,
         data_dir: str = str(BASE_DIR / "data" / "rumors"),
         persist_dir: str = str(BASE_DIR / "vector_db"),
-        embedding_model_name: str = "BAAI/bge-small-zh-v1.5",
-        device: str = "cpu"
+        embedding_model_name: str = config.EMBEDDING_MODEL
     ):
         self.data_dir = Path(data_dir)
         self.persist_dir = Path(persist_dir)
         self.embedding_model_name = embedding_model_name
-        self.device = device
         
         # 延迟初始化
         self._embeddings = None
         self._vectorstore = None
 
     @property
-    def embeddings(self) -> HuggingFaceEmbeddings:
+    def embeddings(self) -> OpenAIEmbeddings:
         """获取嵌入模型实例（单例模式）"""
         if self._embeddings is None:
-            logger.info(f"正在初始化嵌入模型: {self.embedding_model_name} (device={self.device})")
-            self._embeddings = HuggingFaceEmbeddings(
-                model_name=self.embedding_model_name,
-                model_kwargs={'device': self.device},
-                encode_kwargs={
-                    'normalize_embeddings': True,
-                    'batch_size': 32  # 批量处理提高效率
-                }
+            logger.info(f"正在初始化 OpenAI 兼容的云端嵌入模型: {self.embedding_model_name}")
+            self._embeddings = OpenAIEmbeddings(
+                model=self.embedding_model_name,
+                openai_api_key=config.API_KEY,
+                openai_api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                check_embedding_ctx_length=False,  # 关键修复：禁用探测请求，防止 400 错误
+                chunk_size=1                       # 关键修复：确保单条发送，提高兼容性
             )
         return self._embeddings
 
@@ -122,7 +119,9 @@ class EvidenceKnowledgeBase:
             keep_separator=True
         )
         chunks = text_splitter.split_documents(documents)
-        logger.info(f"切分出 {len(chunks)} 个文本块")
+        # 过滤掉空文本块，防止 API 报错
+        chunks = [c for c in chunks if c.page_content.strip()]
+        logger.info(f"切分出 {len(chunks)} 个有效文本块")
 
         # Chroma 在 langchain-chroma 中会自动持久化，无需手动调用 persist()
         Chroma.from_documents(

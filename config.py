@@ -14,4 +14,5 @@ API_KEY = os.environ.get("DASHSCOPE_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
 # 检索配置
-SIMILARITY_THRESHOLD = 0.4  # 相似度阈值，低于此分数的检索结果将被过滤
+SIMILARITY_THRESHOLD = 0.25  # 针对 v4 模型调优：降低基础过滤阈值，确保本地相关文档不被漏掉
+EMBEDDING_MODEL = "text-embedding-v4"  # 阿里云 DashScope 向量模型

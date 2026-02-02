@@ -205,10 +205,19 @@ class RumorJudgeEngine:
         retrieval_start = datetime.now()
         logger.info("进入混合证据检索阶段...")
         try:
-            search_query = f"{result.entity} {result.claim}" if result.entity and result.claim else query
+            # 构造多重检索词：解析后的 实体+主张 以及 原始查询，以提高 text-embedding-v4 的匹配率
+            parsed_query = f"{result.entity} {result.claim}" if result.entity and result.claim else ""
+            search_query = parsed_query if parsed_query else query
             
-            # 使用混合检索器 (内部自动处理本地相似度判断和联网触发)
+            # 使用混合检索器
             documents = self.hybrid_retriever.invoke(search_query)
+            
+            # 如果本地解析词检索效果不佳，且原始查询不同，尝试用原始查询补测一次
+            if not any(doc.metadata.get('type') == 'local' for doc in documents) and parsed_query and parsed_query != query:
+                logger.info("解析词检索未命中本地库，尝试使用原始查询词补测...")
+                extra_docs = self.hybrid_retriever.invoke(query)
+                # 合并并去重
+                documents = self.hybrid_retriever._deduplicate_docs(documents + extra_docs)
             
             # 更新结果元数据
             result.is_web_search = any(doc.metadata.get('type') == 'web' for doc in documents)

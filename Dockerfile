@@ -19,11 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制依赖文件并安装
 COPY requirements.txt .
 
-# 优化安装流程：
-# 1. 显式安装 CPU 版本的 torch (只有 ~150MB，比默认的 ~900MB 小得多)
-# 2. 安装其它依赖
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
 # 复制项目文件
