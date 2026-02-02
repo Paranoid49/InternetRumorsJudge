@@ -50,13 +50,21 @@ TAVILY_API_KEY=your_tavily_key
 
 ## 🚀 部署方式
 
-### 方式 A：Docker 部署 (推荐)
+### 方式 A：一键自动化部署 (推荐)
 ```bash
-# 一键启动（支持 V2 语法）
-docker compose up -d --build
+# 赋予权限并运行部署脚本（自动适配 Docker V1/V2）
+chmod +x deploy.sh
+./deploy.sh
 ```
-- **Web 界面**: `http://localhost:7860`
-- **API 服务**: `http://localhost:8000`
+
+### 方式 B：手动 Docker 部署
+```bash
+# 如果你的系统支持 Docker V2 (推荐)
+docker compose up -d --build
+
+# 如果你还在使用旧版 V1
+docker-compose up -d --build
+```
 
 ## 📂 核心模块说明
 
