@@ -53,11 +53,12 @@ class HybridRetriever(BaseRetriever):
     def search_hybrid(self, query: str, existing_local_docs: List[Document] = None) -> List[Document]:
         """执行混合检索逻辑"""
         logger.info(f"混合检索启动: '{query}'")
-        all_docs = existing_local_docs if existing_local_docs else []
         
-        # 1. 如果没有传入现成的本地结果，先搜本地
-        if not all_docs:
+        # 1. 如果没有传入现成的本地结果，则执行本地检索
+        if existing_local_docs is None:
             all_docs = self.search_local(query)
+        else:
+            all_docs = existing_local_docs
         
         max_similarity = max([d.metadata['similarity'] for d in all_docs]) if all_docs else 0.0
         logger.info(f"本地检索完成，最高相似度: {max_similarity:.4f}")

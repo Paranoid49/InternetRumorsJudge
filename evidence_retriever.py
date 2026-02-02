@@ -71,6 +71,9 @@ class EvidenceKnowledgeBase:
             if not self.persist_dir.exists():
                 logger.warning(f"向量库目录 {self.persist_dir} 不存在，将创建一个空的向量库")
             
+            import os
+            os.environ["ANONYMIZED_TELEMETRY"] = "False" # 禁用 Chroma 匿名遥测，减少日志噪音
+            
             self._vectorstore = Chroma(
                 persist_directory=str(self.persist_dir),
                 embedding_function=self.embeddings,

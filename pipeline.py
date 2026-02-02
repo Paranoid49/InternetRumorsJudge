@@ -89,8 +89,21 @@ class RumorJudgeEngine:
     3. 统一错误处理
     4. 返回标准化的 UnifiedVerificationResult
     """
-    
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls):
+        """实现单例模式，确保全局只有一个引擎实例"""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(RumorJudgeEngine, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+
     def __init__(self):
+        if self._initialized:
+            return
+            
         self.kb = EvidenceKnowledgeBase()
         self.cache_manager = CacheManager(embeddings=self.kb.embeddings)
         self.web_search_tool = WebSearchTool()
@@ -110,6 +123,9 @@ class RumorJudgeEngine:
         except Exception as e:
             logger.error(f"解析器初始化失败: {e}")
             self.parser_chain = None
+            
+        self._initialized = True
+        logger.info("RumorJudgeEngine 单例初始化完成")
 
     def _ensure_kb_ready(self):
         """确保知识库已就绪，如果未构建则构建"""
@@ -226,10 +242,15 @@ class RumorJudgeEngine:
                 logger.info(f"尝试解析词本地检索: '{parsed_query}'")
                 local_docs.extend(self.hybrid_retriever.search_local(parsed_query))
             
-            # 2. 尝试原始查询词本地检索
-            if not local_docs or parsed_query != query:
-                logger.info(f"尝试原始查询词本地检索: '{query}'")
-                local_docs.extend(self.hybrid_retriever.search_local(query))
+            # 2. 尝试原始查询词本地检索（仅在解析词不同且未命中的情况下）
+            # 这里的优化：如果 parsed_query == query，就不需要搜第二次了
+            if parsed_query != query:
+                if not local_docs:
+                    logger.info(f"尝试原始查询词本地检索: '{query}'")
+                    local_docs.extend(self.hybrid_retriever.search_local(query))
+                else:
+                    # 如果解析词已经命中了，但相似度不高，也可以考虑用原始词补测（可选，暂定不补以追求速度）
+                    pass
             
             # 3. 汇总本地结果并去重
             unique_local_docs = self.hybrid_retriever._deduplicate_docs(local_docs)

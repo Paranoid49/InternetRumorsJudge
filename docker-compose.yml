@@ -27,12 +27,7 @@ services:
     environment:
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
-      - HF_ENDPOINT=https://hf-mirror.com
-    volumes:
-      - ./data:/app/data
-      - ./vector_db:/app/vector_db
-      - ./.cache:/app/.cache
-      - ./user_feedback.jsonl:/app/user_feedback.jsonl
+      - RUMOR_API_URL=http://rumor-api:8000
     restart: always
     depends_on:
       - rumor-api

@@ -1,8 +1,8 @@
 import uvicorn
 import time
 import json
-import threading
-import queue
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,8 +33,15 @@ app.add_middleware(
 )
 
 # 初始化核心引擎 (单例模式)
-# 并在启动时预加载资源，避免首次请求延迟
 engine = RumorJudgeEngine()
+
+# 初始化线程池，用于运行同步的引擎核查任务
+executor = ThreadPoolExecutor(max_workers=10)
+
+async def run_engine_async(query: str, use_cache: bool):
+    """在线程池中异步运行引擎核查"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, engine.run, query, use_cache)
 
 # --- 数据模型 ---
 
@@ -119,10 +126,6 @@ async def health_check():
 async def verify_rumor(request: VerifyRequest):
     """
     单条谣言核查接口
-    
-    - **query**: 需要核查的谣言文本
-    - **use_cache**: 是否使用缓存 (默认 True)
-    - **detailed**: 是否返回详细证据 (默认 False)
     """
     start_time = time.time()
     if not request.query.strip():
@@ -130,8 +133,8 @@ async def verify_rumor(request: VerifyRequest):
     
     try:
         logger.info(f"收到核查请求: {request.query} (cache={request.use_cache})")
-        # 调用核心引擎
-        result = engine.run(request.query, use_cache=request.use_cache)
+        # 异步调用核心引擎
+        result = await run_engine_async(request.query, request.use_cache)
         
         # 计算总耗时
         duration = (time.time() - start_time) * 1000
@@ -160,54 +163,39 @@ async def verify_stream(request: VerifyRequest):
 
     start_time = time.time()
 
-    if request.use_cache:
+    async def event_gen():
+        yield ndjson_message({"type": "status", "stage": "started", "query": request.query})
+        
         try:
-            cached_verdict = engine.cache_manager.get_verdict(request.query)
-            if cached_verdict:
-                cached_response = {
-                    "type": "result",
-                    "success": True,
-                    "query": request.query,
-                    "verdict": cached_verdict.verdict.value,
-                    "confidence": cached_verdict.confidence,
-                    "summary": cached_verdict.summary,
-                    "is_cached": True,
-                    "execution_time_ms": (time.time() - start_time) * 1000
-                }
+            # 1. 尝试获取缓存（非阻塞）
+            if request.use_cache:
+                loop = asyncio.get_event_loop()
+                cached_verdict = await loop.run_in_executor(executor, engine.cache_manager.get_verdict, request.query)
+                if cached_verdict:
+                    yield ndjson_message({
+                        "type": "result",
+                        "success": True,
+                        "query": request.query,
+                        "verdict": cached_verdict.verdict.value,
+                        "confidence": cached_verdict.confidence,
+                        "summary": cached_verdict.summary,
+                        "is_cached": True,
+                        "execution_time_ms": (time.time() - start_time) * 1000
+                    })
+                    return
 
-                def cached_gen():
-                    yield ndjson_message(cached_response)
-
-                return StreamingResponse(cached_gen(), media_type="application/x-ndjson")
-        except Exception as e:
-            error_payload = {
-                "type": "error",
-                "success": False,
-                "query": request.query,
-                "verdict": "System Error",
-                "confidence": 0,
-                "summary": str(e),
-                "is_cached": False,
-                "execution_time_ms": (time.time() - start_time) * 1000,
-                "error": str(e)
-            }
-
-            def error_gen():
-                yield ndjson_message(error_payload)
-
-            return StreamingResponse(error_gen(), media_type="application/x-ndjson")
-
-    result_queue: queue.Queue = queue.Queue()
-
-    def worker():
-        try:
-            result = engine.run(request.query, use_cache=False)
+            # 2. 运行完整流程（异步）
+            yield ndjson_message({"type": "status", "stage": "processing"})
+            result = await run_engine_async(request.query, request.use_cache)
             duration = (time.time() - start_time) * 1000
+            
             response = build_verification_response(result, duration, request.detailed).model_dump()
             response["type"] = "result"
-            result_queue.put(response)
+            yield ndjson_message(response)
+            
         except Exception as e:
-            result_queue.put({
+            logger.error(f"流式核查出错: {e}")
+            yield ndjson_message({
                 "type": "error",
                 "success": False,
                 "query": request.query,
@@ -218,60 +206,43 @@ async def verify_stream(request: VerifyRequest):
                 "execution_time_ms": (time.time() - start_time) * 1000,
                 "error": str(e)
             })
-
-    threading.Thread(target=worker, daemon=True).start()
-
-    def event_gen():
-        yield ndjson_message({"type": "status", "stage": "started", "query": request.query})
-        last_ping = time.time()
-        while True:
-            try:
-                payload = result_queue.get(timeout=0.2)
-                yield ndjson_message(payload)
-                if payload.get("type") in ("result", "error"):
-                    break
-            except queue.Empty:
-                if time.time() - last_ping >= 1.0:
-                    yield ndjson_message({"type": "status", "stage": "processing"})
-                    last_ping = time.time()
 
     return StreamingResponse(event_gen(), media_type="application/x-ndjson")
 
 @app.post("/batch-verify", response_model=Dict[str, Any], tags=["Verification"])
 async def batch_verify(request: BatchVerifyRequest):
     """
-    批量谣言核查接口
+    批量谣言核查接口（并发执行）
     """
     if not request.queries:
         raise HTTPException(status_code=400, detail="查询列表不能为空")
-        
-    results = []
-    success_count = 0
     
-    for query in request.queries:
-        if not query.strip():
-            continue
-            
+    queries = [q.strip() for q in request.queries if q.strip()]
+    
+    async def single_verify(query: str):
         try:
-            # 复用 verify 逻辑
-            res = engine.run(query, use_cache=request.use_cache)
-            results.append({
+            res = await run_engine_async(query, request.use_cache)
+            return {
                 "query": query,
                 "success": True,
                 "verdict": res.final_verdict,
                 "confidence": res.confidence_score,
                 "summary": res.summary_report
-            })
-            success_count += 1
+            }
         except Exception as e:
-            results.append({
+            return {
                 "query": query,
                 "success": False,
                 "error": str(e)
-            })
+            }
+
+    # 并发执行所有查询
+    results = await asyncio.gather(*(single_verify(q) for q in queries))
+    
+    success_count = sum(1 for r in results if r["success"])
             
     return {
-        "total": len(request.queries),
+        "total": len(queries),
         "successful": success_count,
         "results": results
     }
