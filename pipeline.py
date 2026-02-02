@@ -92,7 +92,7 @@ class RumorJudgeEngine:
     
     def __init__(self):
         self.kb = EvidenceKnowledgeBase()
-        self.cache_manager = CacheManager()
+        self.cache_manager = CacheManager(embeddings=self.kb.embeddings)
         self.web_search_tool = WebSearchTool()
         self.knowledge_integrator = KnowledgeIntegrator()
         

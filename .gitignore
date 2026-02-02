@@ -19,6 +19,7 @@ env/
 # Project specific
 .cache/
 vector_db/
+vector_cache/
 user_feedback.jsonl
 optimization_data/
 reviewed_data/
