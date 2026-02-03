@@ -23,7 +23,7 @@ class WebSearchTool:
             try:
                 self.tavily_tool = TavilySearch(
                     max_results=self.max_results,
-                    search_depth="advanced"
+                    search_depth="basic" # 从 advanced 改为 basic 以提升速度
                 )
                 logger.info("LangChain Tavily 搜索工具初始化成功。")
             except Exception as e:

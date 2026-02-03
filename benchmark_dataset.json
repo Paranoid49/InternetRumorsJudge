@@ -1,0 +1,32 @@
+[
+  {
+    "query": "吃洋葱可以预防感冒",
+    "expected_verdict": "假",
+    "category": "健康养生"
+  },
+  {
+    "query": "经常喝咖啡会导致骨质疏松",
+    "expected_verdict": "很可能为假",
+    "category": "健康养生"
+  },
+  {
+    "query": "微波炉加热食物会产生致癌物质",
+    "expected_verdict": "假",
+    "category": "生活常识"
+  },
+  {
+    "query": "吸烟有害健康",
+    "expected_verdict": "真",
+    "category": "健康医疗"
+  },
+  {
+    "query": "2026年人类将移民火星",
+    "expected_verdict": "很可能为假",
+    "category": "科学技术"
+  },
+  {
+    "query": "多看绿色能护眼",
+    "expected_verdict": "很可能为假",
+    "category": "健康养生"
+  }
+]

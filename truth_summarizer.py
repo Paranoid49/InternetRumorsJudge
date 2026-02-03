@@ -38,10 +38,11 @@ class FinalVerdict(BaseModel):
 class TruthSummarizer:
     """真相总结智能体"""
     
-    def __init__(self, model_name: str = "qwen3-max", temperature: float = 0.4):
+    def __init__(self, model_name: str = None, temperature: float = 0.4):
         if not config.API_KEY:
             raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量")
 
+        model_name = model_name or config.MODEL_SUMMARIZER
         self.llm = ChatOpenAI(
             model=model_name,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -52,9 +53,12 @@ class TruthSummarizer:
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """你是事实核查的最终裁决员。你的任务是基于所有证据分析，给出综合结论。
 
+                **重要：你必须严格返回符合 Pydantic 模型定义的 JSON 格式，包含 summary, verdict, confidence, risk_level 四个字段。**
+                其中 verdict 必须是 ["真", "很可能为真", "假", "很可能为假", "存在争议", "证据不足"] 中的一个。
+
                 **决策逻辑与步骤：**
-                1. **证据概览**：统计支持、反对、中立的证据数量。注意区分本地证据和联网搜索结果。
-                2. **关键证据评估**：找出权威性最高且相关性高的证据。联网搜索结果可能包含新闻报道或官方辟谣，请谨慎评估其真实性。
+                1. **证据概览**：统计支持、反对、中立的证据数量。
+                2. **关键证据评估**：找出权威性最高且相关性高的证据。
                 3. **综合推理**：解释证据如何指向结论。
                 4. **定性判断**：
                    - **假**：有明确、可信的证据直接反驳主张。
@@ -62,12 +66,16 @@ class TruthSummarizer:
                    - **证据不足**：没有足够的相关证据做出判断。
                    - **很可能为真**：证据倾向于支持，但并非绝对确凿。
                    - **真**：有明确、可信的证据直接支持主张。
-                   - **存在争议**：有高质量的证据同时支持和对立，或专家意见分歧。
+                   - **存在争议**：有高质量的证据同时支持和对立。
                 
-                **输出要求：**
-                - 必须返回严格的 JSON 格式。
-                - summary 字段应是一篇逻辑通顺、可读性强的文章。
-                - confidence 字段必须表示对“裁决结果”的信心。例如：你裁决为“假”，且证据确凿，confidence 应为 100。"""),
+                **输出 JSON 结构示例：**
+                {{
+                    "summary": "根据分析...",
+                    "verdict": "假",
+                    "confidence": 95,
+                    "risk_level": "低"
+                }}
+                """),
             ("human", """**原始主张**：{claim}
 
                 **证据分析结果**：
@@ -137,9 +145,77 @@ class TruthSummarizer:
             except Exception as e:
                 logger.warning(f"真相总结生成尝试 {attempt + 1}/{max_retries} 失败: {e}")
                 if attempt == max_retries - 1:
-                    logger.error("真相总结生成最终失败，已达最大重试次数")
-                    return None
-        return None
+                    logger.error("真相总结生成最终失败，已达最大重试次数。启动规则兜底逻辑...")
+                    return self._rule_based_fallback(claim, assessments)
+        return self._rule_based_fallback(claim, assessments)
+
+    def _rule_based_fallback(self, claim: str, assessments: List[EvidenceAssessment]) -> FinalVerdict:
+        """
+        基于规则的兜底逻辑：当 LLM 总结失败时，通过统计证据立场给出结论。
+        """
+        logger.info("执行基于规则的真相总结兜底...")
+        
+        stance_counts = {
+            "支持": 0,
+            "反对": 0,
+            "中立/不相关": 0,
+            "部分支持/条件性反驳": 0
+        }
+        
+        total_weight = 0
+        weighted_score = 0 # 支持为 +1, 反对为 -1, 其他为 0
+        
+        for a in assessments:
+            weight = a.authority_score # 权重基于权威性
+            stance = a.stance
+            if stance in stance_counts:
+                stance_counts[stance] += 1
+            
+            total_weight += weight
+            if stance == "支持":
+                weighted_score += weight
+            elif stance == "反对":
+                weighted_score -= weight
+            elif stance == "部分支持/条件性反驳":
+                weighted_score -= (weight * 0.3) # 偏向质疑
+
+        # 判定逻辑
+        if not assessments:
+            verdict = VerdictType.INSUFFICIENT
+            confidence = 0
+        elif weighted_score <= - (total_weight * 0.5):
+            verdict = VerdictType.FALSE
+            confidence = 80
+        elif weighted_score < 0:
+            verdict = VerdictType.LIKELY_FALSE
+            confidence = 60
+        elif weighted_score >= (total_weight * 0.5):
+            verdict = VerdictType.TRUE
+            confidence = 80
+        elif weighted_score > 0:
+            verdict = VerdictType.LIKELY_TRUE
+            confidence = 60
+        else:
+            verdict = VerdictType.CONTROVERSIAL
+            confidence = 50
+
+        # 构造摘要
+        summary = (
+            f"【系统自动生成报告（LLM 异常兜底）】\n\n"
+            f"针对主张“{claim}”，系统分析了 {len(assessments)} 条证据。\n"
+            f"统计结果：{stance_counts['支持']} 条支持，{stance_counts['反对']} 条反对，"
+            f"{stance_counts['部分支持/条件性反驳']} 条部分反驳/条件性支持。\n\n"
+            f"基于证据立场的加权统计（总权重 {total_weight}，得分 {weighted_score:.1f}），"
+            f"初步判定结论为：{verdict.value}。\n"
+            f"请注意：此结论由规则引擎自动生成，未经 LLM 深度逻辑润色，仅供参考。"
+        )
+
+        return FinalVerdict(
+            summary=summary,
+            verdict=verdict,
+            confidence=confidence,
+            risk_level="中"
+        )
 
     def summarize_based_on_knowledge(self, claim: str) -> Optional[FinalVerdict]:
         """基于内部知识进行兜底分析"""

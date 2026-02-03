@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from pipeline import RumorJudgeEngine, UnifiedVerificationResult
 import logging
+import config
+from rumor_collector import RumorCollector
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -34,6 +36,11 @@ app.add_middleware(
 
 # 初始化核心引擎 (单例模式)
 engine = RumorJudgeEngine()
+
+# 启动后台自动收集任务 (如果开启)
+if getattr(config, "ENABLE_AUTO_COLLECT", False):
+    collector = RumorCollector()
+    collector.start_background_loop()
 
 # 初始化线程池，用于运行同步的引擎核查任务
 executor = ThreadPoolExecutor(max_workers=10)

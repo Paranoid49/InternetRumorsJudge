@@ -28,7 +28,7 @@ def build_chain():
     if not config.API_KEY:
         raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量")
     model = ChatOpenAI(
-        model="qwen3-max",
+        model=config.MODEL_PARSER,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key=config.API_KEY,
         temperature=0.5,

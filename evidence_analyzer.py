@@ -1,4 +1,5 @@
 import logging
+import concurrent.futures
 from typing import List, Literal, Dict, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -27,10 +28,11 @@ class MultiPerspectiveAnalysis(BaseModel):
 class EvidenceAnalyzer:
     """证据分析智能体"""
     
-    def __init__(self, model_name: str = "qwen3-max", temperature: float = 0.3):
+    def __init__(self, model_name: str = None, temperature: float = 0.3):
         if not config.API_KEY:
             raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量")
             
+        model_name = model_name or config.MODEL_ANALYZER
         self.llm = ChatOpenAI(
             model=model_name,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -97,17 +99,49 @@ class EvidenceAnalyzer:
         
         self.chain = self.prompt | self.llm.with_structured_output(MultiPerspectiveAnalysis)
 
-    def analyze(self, claim: str, evidence_list: List[Dict]) -> List[EvidenceAssessment]:
-        """执行批量分析"""
+    def analyze(self, claim: str, evidence_list: List[Dict], chunk_size: int = 4) -> List[EvidenceAssessment]:
+        """
+        执行分析，如果证据较多则采用并行处理以提高速度。
+        """
         if not evidence_list:
             logger.warning("分析中止: 传入的证据列表为空。")
             return []
 
-        logger.info(f"开始分析 {len(evidence_list)} 条证据，针对主张: '{claim[:50]}...'")
+        count = len(evidence_list)
+        if count <= chunk_size:
+            # 数量较少，直接单次请求
+            return self._analyze_batch(claim, evidence_list, offset=0)
         
-        # 格式化证据文本
+        # 数量较多，分片并行分析
+        logger.info(f"证据数量({count})超过分片阈值({chunk_size})，启动并行分析...")
+        chunks = [evidence_list[i:i + chunk_size] for i in range(0, count, chunk_size)]
+        
+        all_assessments = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(chunks), 5)) as executor:
+            future_to_chunk = {
+                executor.submit(self._analyze_batch, claim, chunk, i * chunk_size): i 
+                for i, chunk in enumerate(chunks)
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_chunk):
+                try:
+                    batch_results = future.result()
+                    all_assessments.extend(batch_results)
+                except Exception as e:
+                    logger.error(f"分片分析失败: {e}")
+        
+        # 按 ID 排序确保顺序一致
+        all_assessments.sort(key=lambda x: x.id)
+        return all_assessments
+
+    def _analyze_batch(self, claim: str, evidence_list: List[Dict], offset: int = 0) -> List[EvidenceAssessment]:
+        """内部执行单次批量的分析请求"""
+        logger.info(f"正在分析 {len(evidence_list)} 条证据 (偏移量: {offset})...")
+        
+        # 格式化证据文本，注意 ID 要加上偏移量
         evidence_text_lines = []
-        for idx, ev in enumerate(evidence_list, 1):
+        for i, ev in enumerate(evidence_list):
+            idx = offset + i + 1
             source = ev.get('source', '未知来源')
             text = ev.get('text', '').replace('\n', ' ')
             evidence_text_lines.append(f"证据 #{idx} [来源: {source}]: {text}")
@@ -119,10 +153,14 @@ class EvidenceAnalyzer:
                 "claim": claim,
                 "evidence_text": formatted_evidence_text
             })
-            logger.info(f"分析成功，返回 {len(result.assessments)} 条评估结果。")
+            # 校验 ID 是否正确（LLM 有时会乱写 ID，我们根据偏移量强行校准一遍）
+            for i, assessment in enumerate(result.assessments):
+                if i < len(evidence_list):
+                    assessment.id = offset + i + 1
+            
             return result.assessments
         except Exception as e:
-            logger.error(f"证据分析过程出错: {e}")
+            logger.error(f"单次批量分析过程出错: {e}")
             return []
 
 # 保持函数式接口以便兼容现有代码

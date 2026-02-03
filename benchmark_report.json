@@ -1,0 +1,59 @@
+{
+  "timestamp": "2026-02-03 22:36:16",
+  "summary": {
+    "total": 6,
+    "correct": 4,
+    "accuracy": "66.7%",
+    "avg_time": "17.41s"
+  },
+  "details": [
+    {
+      "query": "吃洋葱可以预防感冒",
+      "expected": "假",
+      "actual": "假",
+      "correct": true,
+      "time": 21.808279275894165,
+      "confidence": 95
+    },
+    {
+      "query": "经常喝咖啡会导致骨质疏松",
+      "expected": "很可能为假",
+      "actual": "假",
+      "correct": false,
+      "time": 20.980664491653442,
+      "confidence": 95
+    },
+    {
+      "query": "微波炉加热食物会产生致癌物质",
+      "expected": "假",
+      "actual": "假",
+      "correct": true,
+      "time": 12.217062950134277,
+      "confidence": 95
+    },
+    {
+      "query": "吸烟有害健康",
+      "expected": "真",
+      "actual": "真",
+      "correct": true,
+      "time": 15.097329378128052,
+      "confidence": 100
+    },
+    {
+      "query": "2026年人类将移民火星",
+      "expected": "很可能为假",
+      "actual": "假",
+      "correct": false,
+      "time": 18.586692571640015,
+      "confidence": 95
+    },
+    {
+      "query": "多看绿色能护眼",
+      "expected": "很可能为假",
+      "actual": "很可能为假",
+      "correct": true,
+      "time": 15.786401748657227,
+      "confidence": 90
+    }
+  ]
+}

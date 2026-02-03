@@ -1,5 +1,6 @@
 import logging
 import threading
+import concurrent.futures
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -91,6 +92,7 @@ class RumorJudgeEngine:
     """
     _instance = None
     _lock = threading.Lock()
+    _integration_lock = threading.Lock() # 新增：用于后台知识集成的线程锁
 
     def __new__(cls):
         """实现单例模式，确保全局只有一个引擎实例"""
@@ -104,35 +106,96 @@ class RumorJudgeEngine:
         if self._initialized:
             return
             
-        self.kb = EvidenceKnowledgeBase()
-        self.cache_manager = CacheManager(embeddings=self.kb.embeddings)
-        self.web_search_tool = WebSearchTool()
-        self.knowledge_integrator = KnowledgeIntegrator()
+        # 延迟加载标志
+        self._components_initialized = False
+        self._kb = None
+        self._cache_manager = None
+        self._web_search_tool = None
+        self._knowledge_integrator = None
+        self._hybrid_retriever = None
+        self._parser_chain = None
         
-        # 初始化混合检索器
-        self.hybrid_retriever = HybridRetriever(
-            local_kb=self.kb, 
-            web_tool=self.web_search_tool
-        )
-        
-        self._ensure_kb_ready()
-        
-        # 初始化解析器链
-        try:
-            self.parser_chain = build_parser_chain()
-        except Exception as e:
-            logger.error(f"解析器初始化失败: {e}")
-            self.parser_chain = None
-            
         self._initialized = True
-        logger.info("RumorJudgeEngine 单例初始化完成")
+        logger.info("RumorJudgeEngine 单例实例已创建 (组件将延迟初始化)")
+
+    def _lazy_init(self):
+        """延迟初始化核心组件，确保在真正需要时才加载资源"""
+        if self._components_initialized:
+            return
+            
+        with self._lock:
+            if self._components_initialized:
+                return
+                
+            logger.info("正在执行组件延迟初始化...")
+            try:
+                self._kb = EvidenceKnowledgeBase()
+                self._cache_manager = CacheManager(embeddings=self._kb.embeddings)
+                self._web_search_tool = WebSearchTool()
+                self._knowledge_integrator = KnowledgeIntegrator()
+                
+                # 初始化混合检索器
+                self._hybrid_retriever = HybridRetriever(
+                    local_kb=self._kb, 
+                    web_tool=self._web_search_tool
+                )
+                
+                self._ensure_kb_ready()
+                
+                # 初始化解析器链
+                try:
+                    self._parser_chain = build_parser_chain()
+                except Exception as e:
+                    logger.error(f"解析器初始化失败: {e}")
+                    self._parser_chain = None
+                
+                self._components_initialized = True
+                logger.info("所有核心组件初始化完成")
+            except Exception as e:
+                logger.error(f"组件延迟初始化过程中出错: {e}")
+                raise
+
+    @property
+    def is_ready(self) -> bool:
+        """检查引擎核心组件是否已就绪"""
+        return self._components_initialized
+
+    @property
+    def kb(self):
+        self._lazy_init()
+        return self._kb
+
+    @property
+    def cache_manager(self):
+        self._lazy_init()
+        return self._cache_manager
+
+    @property
+    def web_search_tool(self):
+        self._lazy_init()
+        return self._web_search_tool
+
+    @property
+    def knowledge_integrator(self):
+        self._lazy_init()
+        return self._knowledge_integrator
+
+    @property
+    def hybrid_retriever(self):
+        self._lazy_init()
+        return self._hybrid_retriever
+
+    @property
+    def parser_chain(self):
+        self._lazy_init()
+        return self._parser_chain
 
     def _ensure_kb_ready(self):
         """确保知识库已就绪，如果未构建则构建"""
-        if not self.kb.persist_dir.exists():
-            logger.warning(f"向量知识库不存在，正在从 {self.kb.data_dir} 构建...")
+        if not self._kb.persist_dir.exists():
+            logger.warning(f"向量知识库不存在，正在从 {self._kb.data_dir} 构建...")
             try:
-                self.kb.build()
+                self._kb.build()
             except Exception as e:
                 logger.error(f"知识库构建失败: {e}")
 
@@ -141,9 +204,14 @@ class RumorJudgeEngine:
         自动知识沉淀：如果通过联网搜索获得了高置信度的结论，将其异步转化为本地知识。
         """
         if result.is_web_search and result.confidence_score >= 85:
-            logger.info(f"符合自动沉淀条件，启动后台集成线程: {result.query}")
+            logger.info(f"符合自动沉淀条件，尝试启动后台集成线程: {result.query}")
             
             def background_integration():
+                # 使用非阻塞方式获取锁，如果已经有集成任务在跑，则放弃本次任务以节省资源
+                if not self._integration_lock.acquire(blocking=False):
+                    logger.warning("已有知识集成任务在运行中，跳过本次自动沉淀。")
+                    return
+                
                 try:
                     logger.info("开始执行后台知识沉淀流程...")
                     # 1. 构造集成内容
@@ -174,12 +242,15 @@ class RumorJudgeEngine:
                         logger.info("后台知识集成与重构全部完成！")
                 except Exception as e:
                     logger.error(f"后台知识集成失败: {e}")
+                finally:
+                    # 无论成功失败，最后都要释放锁
+                    self._integration_lock.release()
 
             # 启动线程
             thread = threading.Thread(target=background_integration)
             thread.daemon = True
             thread.start()
-            logger.info("已将集成任务切换至后台。")
+            logger.info("已将集成任务分发至后台线程。")
 
     def run(self, query: str, use_cache: bool = True) -> UnifiedVerificationResult:
         """执行完整的核查流程"""
@@ -209,54 +280,49 @@ class RumorJudgeEngine:
              logger.info("跳过缓存检查。")
              result.add_metadata(PipelineStage.CACHE_CHECK, True, "Cache skipped by request")
 
-        # 2. 查询解析
+        # 2. 查询解析与本地初步检索并行执行
         parse_start = datetime.now()
-        logger.info("正在解析查询内容...")
+        logger.info("正在执行查询解析与本地检索并行化...")
+        
         if not self.parser_chain:
             logger.error("解析器未初始化！")
             result.add_metadata(PipelineStage.PARSING, False, "解析器未初始化")
             return result
             
         try:
-            analysis: QueryAnalysis = self.parser_chain.invoke({"query": query})
-            result.entity = analysis.entity
-            result.claim = analysis.claim
-            result.category = analysis.category
-            logger.info(f"解析完成: 实体='{result.entity}', 主张='{result.claim}', 分类='{result.category}'")
-            result.add_metadata(PipelineStage.PARSING, True, duration=(datetime.now() - parse_start).total_seconds() * 1000)
-        except Exception as e:
-            logger.error(f"查询解析失败: {e}")
-            result.add_metadata(PipelineStage.PARSING, False, str(e))
-            return result
-
-        # 3. 混合证据检索
-        retrieval_start = datetime.now()
-        logger.info("进入混合证据检索阶段...")
-        try:
-            # 步骤 A: 收集所有可能的本地证据
-            local_docs = []
+            # 使用线程池并行执行：解析意图 VS 原始词本地检索
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # 任务 1: LLM 解析意图
+                parse_future = executor.submit(self.parser_chain.invoke, {"query": query})
+                # 任务 2: 原始词直接去本地库查一把（抢跑）
+                raw_search_future = executor.submit(self.hybrid_retriever.search_local, query)
+                
+                # 等待解析完成
+                analysis: QueryAnalysis = parse_future.result()
+                result.entity = analysis.entity
+                result.claim = analysis.claim
+                result.category = analysis.category
+                logger.info(f"意图解析完成: 实体='{result.entity}', 主张='{result.claim}'")
+                result.add_metadata(PipelineStage.PARSING, True, duration=(datetime.now() - parse_start).total_seconds() * 1000)
+                
+                # 获取抢跑检索结果
+                local_docs = raw_search_future.result()
+                if local_docs:
+                    logger.info(f"原始词抢跑检索命中 {len(local_docs)} 条证据")
             
-            # 1. 尝试解析词检索
+            # 3. 混合证据检索 (基于已有的解析结果进行补测)
+            retrieval_start = datetime.now()
+            
+            # 如果解析词和原始词不同，用解析词补测本地库
             parsed_query = f"{result.entity} {result.claim}" if result.entity and result.claim else ""
-            if parsed_query:
-                logger.info(f"尝试解析词本地检索: '{parsed_query}'")
+            if parsed_query and parsed_query != query:
+                logger.info(f"尝试解析词补测本地检索: '{parsed_query}'")
                 local_docs.extend(self.hybrid_retriever.search_local(parsed_query))
             
-            # 2. 尝试原始查询词本地检索（仅在解析词不同且未命中的情况下）
-            # 这里的优化：如果 parsed_query == query，就不需要搜第二次了
-            if parsed_query != query:
-                if not local_docs:
-                    logger.info(f"尝试原始查询词本地检索: '{query}'")
-                    local_docs.extend(self.hybrid_retriever.search_local(query))
-                else:
-                    # 如果解析词已经命中了，但相似度不高，也可以考虑用原始词补测（可选，暂定不补以追求速度）
-                    pass
-            
-            # 3. 汇总本地结果并去重
+            # 汇总本地结果并去重
             unique_local_docs = self.hybrid_retriever._deduplicate_docs(local_docs)
             
-            # 步骤 B: 调用混合检索（传入已有的本地文档，避免重复搜索）
-            # search_hybrid 会根据传入的文档相似度决定是否触发联网
+            # 调用混合检索（传入已有的本地文档，决定是否触发联网）
             search_query = parsed_query if parsed_query else query
             documents = self.hybrid_retriever.search_hybrid(search_query, existing_local_docs=unique_local_docs)
             

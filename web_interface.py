@@ -19,78 +19,105 @@ query_history = []
 
 def verify(query):
     if not query.strip():
-        return ("请输入有效内容", "", "{}", pd.DataFrame(query_history[:20] if query_history else []), query)
+        yield ("请输入有效内容", "", "{}", pd.DataFrame(query_history[:20] if query_history else []), query)
+        return
     
-    logger.info(f"Sending query to API: {query}")
+    logger.info(f"Starting streaming query for: {query}")
+    
+    # 初始进度提示
+    progress_md = f"# ⏳ 正在核查: {query}\n\n"
+    yield (progress_md + "> 🚀 启动核查流程...", "", "{}", pd.DataFrame(query_history[:20]), query)
+
     try:
-        # 调用 API 接口
+        # 使用流式 API
         response = requests.post(
-            f"{API_BASE_URL}/verify",
+            f"{API_BASE_URL}/verify-stream",
             json={"query": query, "use_cache": True, "detailed": True},
-            timeout=120 # 核查可能较慢，设置较长超时
+            stream=True,
+            timeout=120
         )
         
         if response.status_code != 200:
             error_msg = f"API 错误 (HTTP {response.status_code}): {response.text}"
-            logger.error(error_msg)
-            return error_msg, "", "{}", pd.DataFrame(query_history), query
+            yield (error_msg, "", "{}", pd.DataFrame(query_history), query)
+            return
 
-        result = response.json()
-        if not result.get("success"):
-            error_msg = f"核查失败: {result.get('error', '未知错误')}"
-            return error_msg, "", "{}", pd.DataFrame(query_history), query
-
-        # 1. 完整报告 (Markdown)
-        verdict = result.get("verdict", "未定")
-        confidence = result.get("confidence", 0)
-        summary = result.get("summary", "")
-        is_cached = result.get("is_cached", False)
-        
-        report_md = f"""
+        final_result = None
+        for line in response.iter_lines():
+            if not line:
+                continue
+            
+            data = json.loads(line.decode('utf-8'))
+            msg_type = data.get("type")
+            
+            if msg_type == "status":
+                stage = data.get("stage")
+                if stage == "started":
+                    status_text = "正在初始化..."
+                elif stage == "processing":
+                    status_text = "正在检索证据并进行深度分析..."
+                else:
+                    status_text = f"正在进行: {stage}"
+                
+                yield (progress_md + f"> ⚙️ {status_text}", "", "{}", pd.DataFrame(query_history[:20]), query)
+                
+            elif msg_type == "result":
+                final_result = data
+                # 1. 完整报告 (Markdown)
+                verdict = data.get("verdict", "未定")
+                confidence = data.get("confidence", 0)
+                summary = data.get("summary", "")
+                is_cached = data.get("is_cached", False)
+                
+                report_md = f"""
 # ⚖️ 核查结论: {verdict}
 **置信度**: {confidence}/100 
 
 ### 📝 总结报告
 {summary}
 """
-        if is_cached:
-            report_md += "\n\n*(⚡ 结果来自缓存)*"
+                if is_cached:
+                    report_md += "\n\n*(⚡ 结果来自缓存)*"
 
-        # 2. 证据展示 (Markdown)
-        evidence_md = "### 🔍 检索到的关键证据\n\n"
-        evidence_list = result.get("evidence", [])
-        if evidence_list:
-            for i, ev in enumerate(evidence_list, 1):
-                content = ev.get('content', ev.get('text', str(ev)))
-                source = ev.get('metadata', {}).get('source', '未知来源')
-                evidence_md += f"**证据 {i}** (来源: {source}):\n> {content}\n\n---\n"
-        else:
-            evidence_md += "_未检索到本地相关证据_"
+                # 2. 证据展示 (Markdown)
+                evidence_md = "### 🔍 检索到的关键证据\n\n"
+                evidence_list = data.get("evidence", [])
+                if evidence_list:
+                    for i, ev in enumerate(evidence_list, 1):
+                        content = ev.get('content', ev.get('text', str(ev)))
+                        source = ev.get('metadata', {}).get('source', '未知来源')
+                        evidence_md += f"**证据 {i}** (来源: {source}):\n> {content}\n\n---\n"
+                else:
+                    evidence_md += "_未检索到本地相关证据_"
 
-        # 3. 详情 (JSON)
-        details_json = json.dumps(result, indent=2, ensure_ascii=False)
+                # 3. 详情 (JSON)
+                details_json = json.dumps(data, indent=2, ensure_ascii=False)
 
-        # 4. 更新历史记录
-        history_entry = {
-            "时间": datetime.now().strftime("%H:%M:%S"),
-            "查询内容": query,
-            "结论": verdict,
-            "置信度": confidence,
-            "缓存命中": "✅" if is_cached else "❌"
-        }
-        query_history.insert(0, history_entry)
-        history_df = pd.DataFrame(query_history[:20])
+                # 4. 更新历史记录
+                history_entry = {
+                    "时间": datetime.now().strftime("%H:%M:%S"),
+                    "查询内容": query,
+                    "结论": verdict,
+                    "置信度": confidence,
+                    "缓存命中": "✅" if is_cached else "❌"
+                }
+                query_history.insert(0, history_entry)
+                history_df = pd.DataFrame(query_history[:20])
 
-        return report_md, evidence_md, details_json, history_df, query
+                yield (report_md, evidence_md, details_json, history_df, query)
+
+            elif msg_type == "error":
+                error_md = f"❌ 核查出错: {data.get('summary', '未知错误')}"
+                yield (error_md, "", json.dumps(data, indent=2, ensure_ascii=False), pd.DataFrame(query_history), query)
 
     except requests.exceptions.RequestException as e:
         logger.error(f"API Connection Error: {e}")
         error_md = f"❌ 无法连接到 API 服务 ({API_BASE_URL})。请确保 API 服务已启动。"
-        return error_md, "", "{}", pd.DataFrame(query_history), query
+        yield (error_md, "", "{}", pd.DataFrame(query_history), query)
     except Exception as e:
         logger.error(f"Unexpected Error: {e}")
         error_md = f"❌ 系统发生错误: {str(e)}"
-        return error_md, "", "{}", pd.DataFrame(query_history), query
+        yield (error_md, "", "{}", pd.DataFrame(query_history), query)
 
 def save_feedback(query, rating, comment):
     logger.info(f"Attempting to save feedback for query: {query}, rating: {rating}")
