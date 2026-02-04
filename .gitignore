@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
 
 # Environment variables
 .env
@@ -11,19 +13,41 @@ __pycache__/
 venv/
 .venv/
 env/
+ENV/
 
 # IDEs
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# Project specific
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific - 新结构
+# 运行时数据（vector_db, cache, semantic_cache, reports）
+storage/
+*.log
+user_feedback.jsonl
+
+# 旧结构的路径（已废弃，保留兼容）
 .cache/
 vector_db/
 vector_cache/
-user_feedback.jsonl
 optimization_data/
 reviewed_data/
 evaluation_results.json
 feedback_stats.json
-*.log
 rumors_dataset.json
+
+# Python test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Claude Code
+.claude/
+*.md~
+.claude*

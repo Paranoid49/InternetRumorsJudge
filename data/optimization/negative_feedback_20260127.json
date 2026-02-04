@@ -1,0 +1,14 @@
+[
+  {
+    "query": "地球是平的",
+    "rating": "无用/错误",
+    "comment": "胡说八道，地球明明是平的",
+    "priority": "medium"
+  },
+  {
+    "query": "喝水中毒",
+    "rating": "无用/错误",
+    "comment": "报告里没说清楚剂量，水中毒是有前提的",
+    "priority": "medium"
+  }
+]

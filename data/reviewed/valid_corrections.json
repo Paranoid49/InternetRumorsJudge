@@ -1,0 +1,12 @@
+[
+  {
+    "query": "喝水中毒",
+    "rating": "无用/错误",
+    "comment": "报告里没说清楚剂量，水中毒是有前提的",
+    "priority": "medium",
+    "issue_type": "knowledge_missing",
+    "reviewed_at": "2026-01-27T23:14:36.875999",
+    "integrated_at": "2026-01-27T23:15:51.953828",
+    "generated_file": "AUTO_1769526951_喝水中毒.txt"
+  }
+]
