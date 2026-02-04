@@ -386,36 +386,34 @@ check_services_status() {
 show_success_info() {
     print_header "🎉 部署完成"
 
-    cat << EOF
-${GREEN}服务访问地址：${NC}
-  • Web 界面:  http://localhost:7860
-  • API 文档:  http://localhost:8000/docs
-  • 健康检查:  http://localhost:8000/health
-
-${GREEN}常用命令：${NC}
-  • 快速启动:  $0 start
-  • 查看状态:  $0 status
-  • 查看日志:  $0 logs
-  • 停止服务:  $0 stop
-  • 重启服务:  $0 restart
-
-${GREEN}更新代码后：${NC}
-  • 代码更新:  $0 deploy              # 智能重建（利用缓存，快）
-  • 依赖更新:  $0 deploy --build       # 强制重新安装依赖
-
-${GREEN}Docker 命令：${NC}
-  • API 日志:  docker logs rumor-api -f
-  • Web 日志:  docker logs rumor-web -f
-  • 容器状态:  docker ps
-
-${YELLOW}构建说明：${NC}
-  • 首次部署或依赖更新: 使用 --build 选项
-  • 代码更新: 直接 deploy，利用 Docker 层缓存
-  • 快速启动: 使用 start 命令，跳过构建
-
-${YELLOW}注意：${NC}
-  如果服务器启用了防火墙，请确保已开放 8000 和 7860 端口
-EOF
+    echo -e "${GREEN}服务访问地址：${NC}"
+    echo "  • Web 界面:  http://localhost:7860"
+    echo "  • API 文档:  http://localhost:8000/docs"
+    echo "  • 健康检查:  http://localhost:8000/health"
+    echo ""
+    echo -e "${GREEN}常用命令：${NC}"
+    echo "  • 快速启动:  $0 start"
+    echo "  • 查看状态:  $0 status"
+    echo "  • 查看日志:  $0 logs"
+    echo "  • 停止服务:  $0 stop"
+    echo "  • 重启服务:  $0 restart"
+    echo ""
+    echo -e "${GREEN}更新代码后：${NC}"
+    echo "  • 代码更新:  $0 deploy              # 智能重建（利用缓存，快）"
+    echo "  • 依赖更新:  $0 deploy --build       # 强制重新安装依赖"
+    echo ""
+    echo -e "${GREEN}Docker 命令：${NC}"
+    echo "  • API 日志:  docker logs rumor-api -f"
+    echo "  • Web 日志:  docker logs rumor-web -f"
+    echo "  • 容器状态:  docker ps"
+    echo ""
+    echo -e "${YELLOW}构建说明：${NC}"
+    echo "  • 首次部署或依赖更新: 使用 --build 选项"
+    echo "  • 代码更新: 直接 deploy，利用 Docker 层缓存"
+    echo "  • 快速启动: 使用 start 命令，跳过构建"
+    echo ""
+    echo -e "${YELLOW}注意：${NC}"
+    echo "  如果服务器启用了防火墙，请确保已开放 8000 和 7860 端口"
 }
 
 # 主函数
