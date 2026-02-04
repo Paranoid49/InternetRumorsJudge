@@ -1,18 +1,34 @@
 #!/bin/bash
 
 # =================================================================
-# Internet Rumors Judge - 服务器部署脚本 v2.0
-# 适用于生产环境部署，支持强制清理和完整诊断
+# Internet Rumors Judge - 服务器部署脚本 v2.1
+# 智能构建策略：只在必要时重新构建，避免重复下载依赖
 # =================================================================
 
 set -e  # 遇到错误立即退出
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# 全局变量
+FORCE_BUILD=false
+FORCE_RECREATE=false
+
+# 检测终端是否支持颜色
+if [ -t 1 ] && [ "$(tput colors 2>/dev/null)" -ge 8 ]; then
+    # 终端支持颜色
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    NC='\033[0m' # No Color
+else
+    # 终端不支持颜色或输出被重定向，使用空字符串
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    CYAN=''
+    NC=''
+fi
 
 # 辅助函数
 print_header() {
@@ -33,25 +49,42 @@ print_error() {
     echo -e "${RED}[错误] $1${NC}"
 }
 
+print_info() {
+    echo -e "${CYAN}[信息] $1${NC}"
+}
+
 # 显示使用帮助
 show_help() {
     cat << EOF
-用法: $0 [选项]
+用法: $0 [选项] [命令]
 
 选项:
-    deploy      完整部署（默认，清理旧容器并重新部署）
-    start       启动服务（不清理）
+    --build, -b      强制重新构建镜像（即使镜像已存在）
+    --recreate, -r   强制重新创建容器
+    --help, -h       显示此帮助信息
+
+命令:
+    deploy      完整部署（默认，智能判断是否需要构建）
+    start       启动服务（使用现有镜像）
     stop        停止服务
     restart     重启服务
+    rebuild     强制重新构建并部署
     clean       清理所有容器、镜像和卷
     status      查看服务状态
     logs        查看服务日志
-    help        显示此帮助信息
 
 示例:
-    $0 deploy   # 完整部署
-    $0 status   # 查看状态
-    $0 logs     # 查看日志
+    $0 deploy              # 智能部署（镜像存在则跳过构建）
+    $0 deploy --build      # 强制重新构建并部署
+    $0 rebuild             # 强制重新构建并部署
+    $0 start               # 快速启动（使用现有镜像）
+    $0 status              # 查看状态
+
+构建策略:
+    • 首次部署: 自动构建镜像
+    • 代码更新: 自动重建镜像（利用 Docker 层缓存）
+    • 依赖更新: 需要使用 --build 强制重新安装
+    • 快速启动: 使用 start 命令，跳过构建
 EOF
 }
 
@@ -115,17 +148,19 @@ ENVEOF
     echo -e "${GREEN}✅ .env 文件检查通过${NC}"
 }
 
+# 检查镜像是否已存在
+check_image_exists() {
+    docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^internet-rumors-judge:latest"
+}
+
 # 强制清理旧容器和镜像
 force_cleanup() {
-    print_step "强制清理旧容器和资源..."
-
-    echo "当前所有 rumor 相关容器："
-    docker ps -a --filter "name=rumor-" --format "table {{.Names}}\t{{.Status}}\t{{.CreatedAt}}" || true
+    print_step "清理旧容器..."
 
     # 强制删除可能存在的旧容器（无论是否由 docker-compose 创建）
     for container in rumor-api rumor-web; do
         if docker ps -a --format '{{.Names}}' | grep -q "^${container}$"; then
-            echo "删除容器: $container"
+            echo "  删除容器: $container"
             docker stop "$container" 2>/dev/null || true
             docker rm "$container" 2>/dev/null || true
         fi
@@ -137,6 +172,29 @@ force_cleanup() {
     echo -e "${GREEN}✅ 清理完成${NC}"
 }
 
+# 智能构建镜像
+smart_build() {
+    local build_needed=$1
+
+    if [ "$FORCE_BUILD" = true ]; then
+        print_step "强制重新构建镜像..."
+        $DOCKER_COMPOSE_CMD build --no-cache
+        return
+    fi
+
+    if [ "$build_needed" = true ]; then
+        if check_image_exists; then
+            print_info "镜像已存在，使用缓存重建..."
+            $DOCKER_COMPOSE_CMD build
+        else
+            print_step "首次构建镜像（可能需要几分钟）..."
+            $DOCKER_COMPOSE_CMD build
+        fi
+    else
+        print_info "镜像已存在，跳过构建（使用 --build 强制重建）"
+    fi
+}
+
 # 完整部署
 do_deploy() {
     print_header "🚀 开始部署 AI 谣言粉碎机"
@@ -145,12 +203,36 @@ do_deploy() {
     setup_compose_cmd
     check_env_file
 
-    # 强制清理
+    # 检查镜像是否存在
+    local image_exists=false
+    if check_image_exists; then
+        image_exists=true
+        print_info "检测到已存在的镜像"
+    fi
+
+    # 判断是否需要构建
+    local build_needed=false
+    if [ "$image_exists" = false ] || [ "$FORCE_BUILD" = true ]; then
+        build_needed=true
+    fi
+
+    # 清理旧容器
     force_cleanup
 
-    # 构建并启动
-    print_step "构建镜像并启动服务..."
-    $DOCKER_COMPOSE_CMD up -d --build --force-recreate
+    # 智能构建
+    if [ "$build_needed" = true ]; then
+        smart_build true
+    else
+        smart_build false
+    fi
+
+    # 启动服务
+    print_step "启动服务..."
+    if [ "$FORCE_RECREATE" = true ]; then
+        $DOCKER_COMPOSE_CMD up -d --force-recreate
+    else
+        $DOCKER_COMPOSE_CMD up -d
+    fi
 
     # 等待服务启动
     print_step "等待服务启动..."
@@ -160,10 +242,37 @@ do_deploy() {
     check_services_status
 }
 
-# 启动服务
-do_start() {
-    print_header "▶️  启动服务"
+# 强制重新构建并部署
+do_rebuild() {
+    print_header "🔨 强制重新构建并部署"
+
+    check_docker
     setup_compose_cmd
+    check_env_file
+
+    force_cleanup
+
+    print_step "重新构建镜像（不使用缓存）..."
+    $DOCKER_COMPOSE_CMD build --no-cache
+
+    print_step "启动服务..."
+    $DOCKER_COMPOSE_CMD up -d --force-recreate
+
+    sleep 5
+    check_services_status
+}
+
+# 快速启动（使用现有镜像）
+do_start() {
+    print_header "▶️  快速启动服务"
+
+    setup_compose_cmd
+
+    if ! check_image_exists; then
+        print_warning "镜像不存在，将自动构建..."
+        $DOCKER_COMPOSE_CMD build
+    fi
+
     $DOCKER_COMPOSE_CMD up -d
     sleep 3
     check_services_status
@@ -203,7 +312,7 @@ do_clean() {
     $DOCKER_COMPOSE_CMD down --volumes --remove-orphans
 
     print_step "删除镜像..."
-    docker images | grep rumor | awk '{print $3}' | xargs -r docker rmi -f || true
+    docker images | grep -E 'REPOSITORY|internet-rumors-judge' | awk 'NR>1 {print $3}' | xargs -r docker rmi -f || true
 
     print_step "清理悬空资源..."
     docker system prune -f
@@ -218,6 +327,9 @@ do_status() {
 
     echo -e "\n容器状态："
     $DOCKER_COMPOSE_CMD ps
+
+    echo -e "\n镜像信息："
+    docker images | grep -E 'REPOSITORY|internet-rumors-judge' || echo "无相关镜像"
 
     echo -e "\n网络信息："
     docker network ls | grep rumor || echo "无 rumor 网络"
@@ -281,15 +393,25 @@ ${GREEN}服务访问地址：${NC}
   • 健康检查:  http://localhost:8000/health
 
 ${GREEN}常用命令：${NC}
-  • 查看日志:  $0 logs
+  • 快速启动:  $0 start
   • 查看状态:  $0 status
+  • 查看日志:  $0 logs
   • 停止服务:  $0 stop
   • 重启服务:  $0 restart
+
+${GREEN}更新代码后：${NC}
+  • 代码更新:  $0 deploy              # 智能重建（利用缓存，快）
+  • 依赖更新:  $0 deploy --build       # 强制重新安装依赖
 
 ${GREEN}Docker 命令：${NC}
   • API 日志:  docker logs rumor-api -f
   • Web 日志:  docker logs rumor-web -f
   • 容器状态:  docker ps
+
+${YELLOW}构建说明：${NC}
+  • 首次部署或依赖更新: 使用 --build 选项
+  • 代码更新: 直接 deploy，利用 Docker 层缓存
+  • 快速启动: 使用 start 命令，跳过构建
 
 ${YELLOW}注意：${NC}
   如果服务器启用了防火墙，请确保已开放 8000 和 7860 端口
@@ -298,6 +420,27 @@ EOF
 
 # 主函数
 main() {
+    # 解析参数
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --build|-b)
+                FORCE_BUILD=true
+                shift
+                ;;
+            --recreate|-r)
+                FORCE_RECREATE=true
+                shift
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
     # 获取操作类型
     ACTION=${1:-deploy}
 
@@ -315,6 +458,10 @@ main() {
         restart)
             do_restart
             ;;
+        rebuild)
+            do_rebuild
+            show_success_info
+            ;;
         clean)
             do_clean
             ;;
@@ -323,9 +470,6 @@ main() {
             ;;
         logs)
             do_logs "$2"
-            ;;
-        help|--help|-h)
-            show_help
             ;;
         *)
             print_error "未知操作: $ACTION"
