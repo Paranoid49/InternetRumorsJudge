@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-02-05T22:45:37.459030",
+  "test_name": "缓存失效测试",
+  "result": "失败",
+  "details": {
+    "cache_invalidated_on_kb_rebuild": false,
+    "new_cache_created_after_rebuild": false
+  }
+}

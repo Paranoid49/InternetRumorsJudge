@@ -37,9 +37,20 @@ MODEL_ANALYZER = "qwen-plus"   # 证据分析：任务量大，追求速度与�
 MODEL_SUMMARIZER = "qwen-max" # 最终裁决：追求极高准确度与逻辑严密性
 
 # 自动收集配置 (Auto-Collector)
-ENABLE_AUTO_COLLECT = True     # 是否开启自动收集互联网谣言
+ENABLE_AUTO_COLLECT = False     # 是否开启自动收集互联网谣言
 AUTO_COLLECT_INTERVAL = 3600 * 24 # 自动收集间隔时间（秒），默认 24 小时
 
 # 超时配置 (Timeout)
 LLM_REQUEST_TIMEOUT = 30       # LLM 请求超时时间（秒），防止请求挂死
 WEB_SEARCH_TIMEOUT = 15        # 联网搜索超时时间（秒）
+
+# 证据预过滤配置 (Evidence Prefiltering) - 阶段2新增
+ENABLE_EVIDENCE_PREFILTER = True      # 是否启用证据预过滤（降低API成本）
+PREFILTER_MAX_EVIDENCE = 5            # 预过滤后保留的最大证据数量
+PREFILTER_MIN_SIMILARITY = 0.3        # 证据相似度过滤阈值
+
+# 性能优化配置 (Performance Optimization) - 阶段4新增
+ENABLE_FAST_MODE = False             # 是否启用快速模式（降低温度、限制输出）
+ANALYZER_MAX_TOKENS = 1024           # 证据分析最大输出token数
+PARALLEL_ANALYZE_THRESHOLD = 2     # 触发并行分析的最小证据数量
+BATCH_EMBEDDING_ENABLED = True      # 是否启用批量Embedding

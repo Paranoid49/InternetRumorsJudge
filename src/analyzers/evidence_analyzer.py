@@ -12,6 +12,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src import config
 
+# 导入重试策略（可选）
+try:
+    from src.core.retry_policy import with_llm_retry
+    RETRY_AVAILABLE = True
+except ImportError:
+    RETRY_AVAILABLE = False
+
 logger = logging.getLogger("EvidenceAnalyzer")
 
 class EvidenceAssessment(BaseModel):
@@ -34,17 +41,25 @@ class MultiPerspectiveAnalysis(BaseModel):
 class EvidenceAnalyzer:
     """证据分析智能体"""
     
-    def __init__(self, model_name: str = None, temperature: float = 0.3):
+    def __init__(self, model_name: str = None, temperature: float = 0.1):  # 优化: 从 0.3 降低到 0.1
         if not config.API_KEY:
             raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量")
-            
+
         model_name = model_name or config.MODEL_ANALYZER
+
+        # 优化: 添加快速模式配置
+        fast_mode = getattr(config, 'ENABLE_FAST_MODE', False)
+        if fast_mode:
+            temperature = 0.0  # 快速模式使用确定性输出
+            logger.info("启用快速模式：temperature=0.0")
+
         self.llm = ChatOpenAI(
             model=model_name,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             api_key=config.API_KEY,
             temperature=temperature,
             timeout=getattr(config, 'LLM_REQUEST_TIMEOUT', 30),
+            max_tokens=getattr(config, 'ANALYZER_MAX_TOKENS', 1024),  # 优化: 限制输出长度
         )
         
         self.prompt = ChatPromptTemplate.from_messages([
@@ -103,18 +118,80 @@ class EvidenceAnalyzer:
                 
                 请分析上述证据。"""),
         ])
-        
+
         self.chain = self.prompt | self.llm.with_structured_output(MultiPerspectiveAnalysis)
 
-    def analyze(self, claim: str, evidence_list: List[Dict], chunk_size: int = 4) -> List[EvidenceAssessment]:
+        # 预过滤配置
+        self.enable_prefilter = getattr(config, 'ENABLE_EVIDENCE_PREFILTER', True)
+        self.prefilter_max_evidence = getattr(config, 'PREFILTER_MAX_EVIDENCE', 5)
+        self.prefilter_min_similarity = getattr(config, 'PREFILTER_MIN_SIMILARITY', 0.3)
+
+    def _prefilter_evidence(self, claim: str, evidence_list: List[Dict]) -> List[Dict]:
+        """
+        预过滤证据，基于简单规则快速筛选
+
+        规则：
+        1. 过滤相似度过低的证据
+        2. 限制最大证据数量
+        3. 优先保留本地证据（权威性更高）
+        """
+        if not self.enable_prefilter:
+            return evidence_list
+
+        logger.info(f"预过滤: {len(evidence_list)} 条证据 -> ...")
+
+        # 1. 过滤相似度过低的证据
+        filtered = []
+        for ev in evidence_list:
+            similarity = ev.get('metadata', {}).get('similarity', 0.0)
+            # 如果有similarity字段，过滤低于阈值的
+            if similarity >= self.prefilter_min_similarity or similarity == 0.0:
+                filtered.append(ev)
+
+        if len(filtered) < len(evidence_list):
+            logger.info(f"相似度过滤: {len(evidence_list)} -> {len(filtered)}")
+
+        # 2. 优先保留本地证据（权威性更高）
+        local_evidence = [ev for ev in filtered if ev.get('metadata', {}).get('type') == 'local']
+        web_evidence = [ev for ev in filtered if ev.get('metadata', {}).get('type') == 'web']
+
+        # 3. 限制最大数量（本地证据优先）
+        selected = local_evidence[:self.prefilter_max_evidence]
+        remaining_slots = self.prefilter_max_evidence - len(selected)
+
+        if remaining_slots > 0 and web_evidence:
+            selected.extend(web_evidence[:remaining_slots])
+
+        logger.info(f"预过滤完成: {len(evidence_list)} -> {len(selected)} 条证据 (节省 {len(evidence_list) - len(selected)} 条LLM分析)")
+
+        return selected
+
+    def analyze(self, claim: str, evidence_list: List[Dict], chunk_size: int = 2) -> List[EvidenceAssessment]:
         """
         执行分析，如果证据较多则采用并行处理以提高速度。
+
+        优化: 降低 chunk_size 到 2，触发更积极的并行策略
+
+        新增：预过滤机制，降低API成本
         """
         if not evidence_list:
             logger.warning("分析中止: 传入的证据列表为空。")
             return []
 
+        # 预过滤证据（降低LLM调用次数）
+        evidence_list = self._prefilter_evidence(claim, evidence_list)
+
+        if not evidence_list:
+            logger.warning("预过滤后无证据，跳过分析")
+            return []
+
         count = len(evidence_list)
+
+        # 优化: 优先使用单证据并行分析（适用于 2-5 个证据）
+        if 2 <= count <= 5:
+            logger.info(f"证据数量({count})适合单证据并行分析")
+            return self._analyze_parallel_single(claim, evidence_list)
+
         if count <= chunk_size:
             # 数量较少，直接单次请求
             return self._analyze_batch(claim, evidence_list, offset=0)
@@ -140,6 +217,45 @@ class EvidenceAnalyzer:
         # 按 ID 排序确保顺序一致
         all_assessments.sort(key=lambda x: x.id)
         return all_assessments
+
+    def _analyze_parallel_single(self, claim: str, evidence_list: List[Dict]) -> List[EvidenceAssessment]:
+        """
+        每个证据单独并行分析（优化方案1）
+
+        适用于 2-5 个证据的场景，每个证据独立并行分析
+        """
+        if not evidence_list:
+            return []
+
+        logger.info(f"启用单证据并行分析: {len(evidence_list)} 条证据")
+
+        all_assessments = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(evidence_list), 5)) as executor:
+            # 每个证据单独提交
+            future_to_evidence = {
+                executor.submit(self._analyze_single_evidence, claim, ev, i): i
+                for i, ev in enumerate(evidence_list)
+            }
+
+            for future in concurrent.futures.as_completed(future_to_evidence):
+                try:
+                    assessment = future.result()
+                    all_assessments.append(assessment)
+                except Exception as e:
+                    logger.error(f"证据分析失败: {e}")
+
+        # 按 ID 排序确保顺序一致
+        all_assessments.sort(key=lambda x: x.id)
+        return all_assessments
+
+    def _analyze_single_evidence(self, claim: str, evidence: Dict, index: int) -> EvidenceAssessment:
+        """
+        分析单个证据（用于并行调用）
+
+        复用 _analyze_batch 的逻辑，但只处理一个证据
+        """
+        results = self._analyze_batch(claim, [evidence], offset=index)
+        return results[0] if results else None
 
     def _analyze_batch(self, claim: str, evidence_list: List[Dict], offset: int = 0) -> List[EvidenceAssessment]:
         """内部执行单次批量的分析请求"""

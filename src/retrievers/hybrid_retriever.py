@@ -13,6 +13,13 @@ from src.retrievers.evidence_retriever import EvidenceKnowledgeBase
 from src.retrievers.web_search_tool import WebSearchTool
 from src import config
 
+# 导入批量Embedder（优化方案4）
+try:
+    from src.utils.batch_embedder import get_batch_embedder
+    BATCH_EMBEDDING_AVAILABLE = True
+except ImportError:
+    BATCH_EMBEDDING_AVAILABLE = False
+
 logger = logging.getLogger("HybridRetriever")
 
 class HybridRetriever(BaseRetriever):
@@ -33,6 +40,15 @@ class HybridRetriever(BaseRetriever):
     def __init__(self, local_kb: EvidenceKnowledgeBase, web_tool: WebSearchTool, **kwargs):
         # BaseRetriever 是 Pydantic 模型，需要通过 super().__init__ 初始化
         super().__init__(local_kb=local_kb, web_tool=web_tool, **kwargs)
+
+        # 初始化批量Embedder（优化方案4）- 使用私有属性避免Pydantic冲突
+        self._batch_embedder = None
+        if BATCH_EMBEDDING_AVAILABLE and getattr(config, 'BATCH_EMBEDDING_ENABLED', True):
+            try:
+                self._batch_embedder = get_batch_embedder(local_kb.embeddings)
+                logger.info("批量Embedding已启用")
+            except Exception as e:
+                logger.warning(f"批量Embedding初始化失败: {e}")
 
     def _get_relevant_documents(self, query: str) -> List[Document]:
         """核心检索逻辑 (LangChain 标准接口)"""

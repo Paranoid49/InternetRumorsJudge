@@ -14,6 +14,12 @@ from typing import Optional, List, Dict, Any
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# 修复控制台中文乱码
+try:
+    from src.utils import encoding_fix
+except ImportError:
+    pass
+
 from src.core.pipeline import RumorJudgeEngine, UnifiedVerificationResult
 from src import config
 
@@ -216,14 +222,134 @@ async def verify_stream(request: VerifyRequest):
                 "success": False,
                 "query": request.query,
                 "verdict": "System Error",
-                "confidence": 0,
-                "summary": str(e),
                 "is_cached": False,
                 "execution_time_ms": (time.time() - start_time) * 1000,
                 "error": str(e)
             })
 
     return StreamingResponse(event_gen(), media_type="application/x-ndjson")
+
+
+@app.post("/verify-stream-enhanced", tags=["Verification"])
+async def verify_stream_enhanced(request: VerifyRequest):
+    """
+    增强版流式响应（优化方案2）
+
+    提供更细粒度的进度反馈，改善用户体验
+    """
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="查询内容不能为空")
+
+    start_time = time.time()
+
+    async def event_gen_enhanced():
+        # 阶段1: 开始
+        yield ndjson_message({
+            "type": "status",
+            "stage": "started",
+            "query": request.query,
+            "timestamp": time.time()
+        })
+
+        try:
+            # 1.1 缓存检查（快速返回）
+            if request.use_cache:
+                yield ndjson_message({"type": "status", "stage": "cache_check", "status": "checking"})
+                loop = asyncio.get_event_loop()
+                cached_verdict = await loop.run_in_executor(
+                    executor,
+                    engine.cache_manager.get_verdict,
+                    request.query
+                )
+                if cached_verdict:
+                    duration = (time.time() - start_time) * 1000
+                    yield ndjson_message({
+                        "type": "result",
+                        "success": True,
+                        "query": request.query,
+                        "verdict": cached_verdict.verdict.value,
+                        "confidence": cached_verdict.confidence,
+                        "summary": cached_verdict.summary,
+                        "is_cached": True,
+                        "execution_time_ms": duration
+                    })
+                    return
+                else:
+                    yield ndjson_message({"type": "status", "stage": "cache_check", "status": "miss"})
+
+            # 阶段2: 查询解析（~1-2秒后返回）
+            yield ndjson_message({"type": "status", "stage": "parsing", "status": "started"})
+
+            # 运行完整流程但不使用stream（因为我们想分阶段报告）
+            result = await run_engine_async(request.query, False)  # 禁用缓存，自己控制
+
+            # 报告解析完成
+            if result.entity or result.claim:
+                yield ndjson_message({
+                    "type": "progress",
+                    "stage": "parsing",
+                    "status": "completed",
+                    "entity": result.entity,
+                    "claim": result.claim,
+                    "category": result.category,
+                    "elapsed_ms": (time.time() - start_time) * 1000
+                })
+
+            # 阶段3: 检索完成（~2-4秒后返回）
+            if result.retrieved_evidence:
+                yield ndjson_message({
+                    "type": "progress",
+                    "stage": "retrieval",
+                    "status": "completed",
+                    "evidence_count": len(result.retrieved_evidence),
+                    "is_web_search": result.is_web_search,
+                    "elapsed_ms": (time.time() - start_time) * 1000
+                })
+
+            # 阶段4: 证据分析进度
+            if result.evidence_assessments:
+                total = len(result.evidence_assessments)
+                for i, assessment in enumerate(result.evidence_assessments):
+                    yield ndjson_message({
+                        "type": "progress",
+                        "stage": "analysis",
+                        "status": "in_progress",
+                        "current": i + 1,
+                        "total": total,
+                        "evidence_id": assessment.id,
+                        "relevance": assessment.relevance,
+                        "stance": assessment.stance,
+                        "elapsed_ms": (time.time() - start_time) * 1000
+                    })
+
+                yield ndjson_message({
+                    "type": "progress",
+                    "stage": "analysis",
+                    "status": "completed",
+                    "total": total,
+                    "elapsed_ms": (time.time() - start_time) * 1000
+                })
+
+            # 阶段5: 最终结果
+            duration = (time.time() - start_time) * 1000
+            response = build_verification_response(result, duration, request.detailed).model_dump()
+            response["type"] = "result"
+            response["elapsed_ms"] = duration
+            yield ndjson_message(response)
+
+        except Exception as e:
+            logger.error(f"增强流式核查出错: {e}")
+            yield ndjson_message({
+                "type": "error",
+                "success": False,
+                "query": request.query,
+                "verdict": "System Error",
+                "is_cached": False,
+                "execution_time_ms": (time.time() - start_time) * 1000,
+                "error": str(e)
+            })
+
+    return StreamingResponse(event_gen_enhanced(), media_type="application/x-ndjson")
 
 @app.post("/batch-verify", response_model=Dict[str, Any], tags=["Verification"])
 async def batch_verify(request: BatchVerifyRequest):

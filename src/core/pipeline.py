@@ -11,8 +11,21 @@ from datetime import datetime
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# 修复控制台中文乱码
+try:
+    from src.utils import encoding_fix
+except ImportError:
+    pass
+
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# 配置结构化日志
+try:
+    from src.observability import configure_logging
+    configure_logging(log_level="INFO", json_output=False)  # 开发环境使用可读格式
+except ImportError:
+    pass  # 回退到标准 logging
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -74,6 +87,24 @@ class UnifiedVerificationResult(BaseModel):
 
 # --- 导入业务组件 ---
 try:
+    from src import config
+    from src.analyzers.query_parser import build_chain as build_parser_chain
+    from src.analyzers.query_parser import QueryAnalysis
+    from src.retrievers.evidence_retriever import EvidenceKnowledgeBase
+    from src.analyzers.evidence_analyzer import analyze_evidence, EvidenceAssessment
+    from src.analyzers.truth_summarizer import summarize_truth, FinalVerdict, VerdictType, summarize_with_fallback
+    from src.core.cache_manager import CacheManager
+    from src.retrievers.web_search_tool import WebSearchTool
+    from src.knowledge.knowledge_integrator import KnowledgeIntegrator
+    from src.retrievers.hybrid_retriever import HybridRetriever
+
+    # 导入可观测性模块（可选）
+    try:
+        from src.observability import get_logger, get_metrics_collector, RequestContext, StageTimer
+        OBSERVABILITY_AVAILABLE = True
+    except ImportError:
+        OBSERVABILITY_AVAILABLE = False
+except ImportError as e:
     from src import config
     from src.analyzers.query_parser import build_chain as build_parser_chain
     from src.analyzers.query_parser import QueryAnalysis

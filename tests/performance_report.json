@@ -1,0 +1,91 @@
+{
+  "timestamp": "2026-02-05T23:57:17.649114",
+  "system_info": {
+    "python_version": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+    "platform": "win32"
+  },
+  "benchmarks": {
+    "cache_exact": {
+      "scenario": "精确缓存命中",
+      "query": "维生素C能预防感冒吗？",
+      "iterations": 4,
+      "min_ms": 0.0,
+      "max_ms": 1.01,
+      "avg_ms": 0.39,
+      "median_ms": 0.54,
+      "p95_ms": 1.01,
+      "p99_ms": 1.01,
+      "times": [
+        0.0,
+        0.0,
+        1.012563705444336,
+        0.5402565002441406
+      ]
+    },
+    "cache_semantic": {
+      "scenario": "语义缓存命中",
+      "query": "吃维生素C会致癌吗",
+      "iterations": 5,
+      "min_ms": 0.0,
+      "max_ms": 0.51,
+      "avg_ms": 0.31,
+      "median_ms": 0.51,
+      "p95_ms": 0.51,
+      "p99_ms": 0.51,
+      "times": [
+        0.5145072937011719,
+        0.5099773406982422,
+        0.0,
+        0.5099773406982422,
+        0.0
+      ]
+    },
+    "local_rag": {
+      "scenario": "本地RAG",
+      "query": "喝隔夜水会致癌吗",
+      "iterations": 3,
+      "min_s": 9.36,
+      "max_s": 10.88,
+      "avg_s": 10.07,
+      "median_s": 9.95,
+      "p95_s": 10.88,
+      "p99_s": 10.88,
+      "times": [
+        10.883787155151367,
+        9.948426723480225,
+        9.364032506942749
+      ]
+    },
+    "full_pipeline": {
+      "scenario": "完整流程",
+      "query": "2025年地球会毁灭吗",
+      "iterations": 2,
+      "min_s": 14.35,
+      "max_s": 15.9,
+      "avg_s": 15.13,
+      "median_s": 15.9,
+      "p95_s": 15.9,
+      "p99_s": 15.9,
+      "times": [
+        15.89840292930603,
+        14.35469102859497
+      ]
+    },
+    "batch": {
+      "scenario": "批量查询",
+      "total_queries": 5,
+      "total_time_s": 0.0,
+      "avg_time_s": 0.0,
+      "min_s": 0.0,
+      "max_s": 0.0,
+      "cache_hit_rate": 1.0,
+      "individual_times": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  }
+}

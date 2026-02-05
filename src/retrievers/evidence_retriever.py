@@ -19,6 +19,12 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
+# 导入版本管理器
+try:
+    from src.core.version_manager import VersionManager
+except ImportError:
+    VersionManager = None
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +54,18 @@ class EvidenceKnowledgeBase:
         self.data_dir = Path(data_dir)
         self.persist_dir = Path(persist_dir)
         self.embedding_model_name = embedding_model_name
-        
+
+        # 初始化版本管理器（如果可用）
+        self._version_manager = None
+        if VersionManager is not None:
+            storage_base = Path(persist_dir).parent
+            self._version_manager = VersionManager(base_dir=storage_base)
+            # 更新 persist_dir 为当前活跃版本
+            active_path = self._version_manager.get_active_db_path()
+            if active_path.exists() or active_path == Path(persist_dir):
+                self.persist_dir = active_path
+                logger.info(f"使用版本管理的向量库: {self.persist_dir}")
+
         # 延迟初始化
         self._embeddings = None
         self._vectorstore = None
@@ -87,13 +104,23 @@ class EvidenceKnowledgeBase:
     def build(self, chunk_size: int = 500, chunk_overlap: int = 50, force: bool = False, incremental: bool = True):
         """
         构建知识库：加载文档 -> 切分 -> 向量化 -> 存储
-        
+
+        使用双缓冲策略，避免阻塞并发查询：
+        1. 在临时目录中构建新版本
+        2. 构建完成后原子性切换
+        3. 旧版本在下次构建时清理
+
         Args:
             chunk_size: 文本块大小
             chunk_overlap: 文本块重叠大小
             force: 是否强制重建（会删除原有索引）
             incremental: 是否增量构建（仅添加新文档），默认为 True
         """
+        # 如果使用版本管理器，采用双缓冲策略
+        if self._version_manager and not force and self.persist_dir.exists():
+            return self._build_with_versioning(chunk_size, chunk_overlap, incremental)
+
+        # 传统构建方式（首次构建或强制重建）
         if force and self.persist_dir.exists():
             logger.warning(f"强制重建，正在删除旧索引: {self.persist_dir}")
             shutil.rmtree(self.persist_dir)
@@ -160,6 +187,108 @@ class EvidenceKnowledgeBase:
         # 将新块添加到向量库中
         self.vectorstore.add_documents(chunks)
         logger.info(f"✅ 知识库更新完成，已保存至 {self.persist_dir}")
+
+    def _build_with_versioning(self, chunk_size: int, chunk_overlap: int, incremental: bool):
+        """
+        使用版本管理的双缓冲构建
+
+        在临时目录中构建，完成后原子性切换，避免阻塞并发查询
+        """
+        logger.info("使用版本管理的双缓冲构建策略")
+
+        # 1. 创建临时构建目录
+        staging_dir = self._version_manager.create_staging_dir()
+        logger.info(f"临时构建目录: {staging_dir}")
+
+        # 2. 准备文档
+        if not self.data_dir.exists():
+            raise FileNotFoundError(f"数据目录不存在: {self.data_dir}")
+
+        logger.info(f"开始扫描文档: {self.data_dir}")
+        loader = DirectoryLoader(
+            str(self.data_dir),
+            glob="**/*.txt",
+            loader_cls=TextLoader,
+            loader_kwargs={'encoding': 'utf-8'}
+        )
+        documents = loader.load()
+
+        if not documents:
+            logger.warning("未找到任何文档，跳过构建")
+            return
+
+        # 增量构建：只处理新文档
+        if incremental:
+            try:
+                # 获取当前活跃库的文档列表
+                if self._vectorstore is None:
+                    _ = self.vectorstore  # 触发初始化
+
+                existing_metadatas = self._vectorstore.get()['metadatas']
+                existing_sources = set()
+                for meta in existing_metadatas:
+                    if 'source' in meta:
+                        existing_sources.add(meta['source'])
+
+                # 过滤出新文档
+                new_documents = [doc for doc in documents if doc.metadata['source'] not in existing_sources]
+
+                if not new_documents:
+                    logger.info("没有发现新文档，跳过增量构建")
+                    return
+
+                logger.info(f"发现 {len(new_documents)} 个新文档，进行增量更新...")
+                documents = new_documents
+            except Exception as e:
+                logger.error(f"获取现有索引失败，回退到全量构建: {e}")
+
+        logger.info(f"准备处理 {len(documents)} 个文档")
+
+        # 3. 文本切分
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=len,
+            separators=["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],
+            keep_separator=True
+        )
+        chunks = text_splitter.split_documents(documents)
+        chunks = [c for c in chunks if c.page_content.strip()]
+
+        if not chunks:
+            logger.info("没有有效的文本块需要添加")
+            return
+
+        logger.info(f"切分出 {len(chunks)} 个有效文本块")
+
+        # 4. 在临时目录中创建新向量库
+        import os
+        os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
+        staging_vectorstore = Chroma(
+            persist_directory=str(staging_dir),
+            embedding_function=self.embeddings,
+            collection_metadata={"hnsw:space": "cosine"}
+        )
+
+        # 5. 向量化并保存到临时目录
+        staging_vectorstore.add_documents(chunks)
+        logger.info(f"临时向量库已构建: {staging_dir}")
+
+        # 6. 提交新版本（原子性切换）
+        doc_count = len(chunks)
+        success = self._version_manager.commit_version(staging_dir, doc_count)
+
+        if success:
+            logger.info("✅ 新版本已提交，原子性切换成功")
+
+            # 重置向量存储引用，下次查询会使用新版本
+            self._vectorstore = None
+            self.persist_dir = self._version_manager.get_active_db_path()
+            logger.info(f"活跃向量库已更新: {self.persist_dir}")
+        else:
+            logger.error("❌ 版本提交失败，已回滚到原版本")
+
 
     def get_retriever(self, k: int = 3, score_threshold: Optional[float] = None) -> VectorStoreRetriever:
         """

@@ -14,3 +14,10 @@ requests
 python-dotenv
 ddgs
 langchain-tavily
+# 可观测性
+structlog
+prometheus-client
+# 重试机制
+tenacity
+# 限流（阶段2）
+slowapi

@@ -13,6 +13,12 @@ from src import config
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
+# 导入版本管理器（可选）
+try:
+    from src.core.version_manager import VersionManager
+except ImportError:
+    VersionManager = None
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("KnowledgeIntegrator")
@@ -161,14 +167,31 @@ class KnowledgeIntegrator:
             print("⚠️ No files generated.")
 
     def rebuild_knowledge_base(self):
-        """Rebuild the vector knowledge base."""
-        print("🔄 Rebuilding Knowledge Base...")
+        """
+        Rebuild the vector knowledge base using double-buffering strategy.
+
+        新版本在后台构建，不会阻塞并发查询。构建完成后原子性切换。
+        """
+        print("🔄 Rebuilding Knowledge Base (using double-buffering strategy)...")
+        logger.info("开始异步重构知识库（双缓冲策略）")
+
         try:
             kb = EvidenceKnowledgeBase()
-            kb.build()
-            print("✅ Knowledge Base rebuilt successfully!")
+
+            # 使用版本管理的双缓冲构建
+            if kb._version_manager:
+                logger.info("使用版本管理的双缓冲构建，不会阻塞并发查询")
+                kb.build(incremental=False)  # 全量重建新版本
+                print("✅ Knowledge Base rebuilt successfully with versioning!")
+            else:
+                # 回退到传统方式
+                logger.warning("版本管理器未启用，使用传统构建方式（可能阻塞查询）")
+                kb.build(force=True, incremental=False)
+                print("✅ Knowledge Base rebuilt successfully!")
+
         except Exception as e:
-            logger.error(f"Failed to rebuild Knowledge Base: {e}")
+            logger.error(f"Failed to rebuild Knowledge Base: {e}", exc_info=True)
+            print(f"❌ Failed to rebuild Knowledge Base: {e}")
 
 if __name__ == "__main__":
     integrator = KnowledgeIntegrator()
