@@ -37,7 +37,7 @@ MODEL_ANALYZER = "qwen-plus"   # 证据分析：任务量大，追求速度与�
 MODEL_SUMMARIZER = "qwen-max" # 最终裁决：追求极高准确度与逻辑严密性
 
 # 自动收集配置 (Auto-Collector)
-ENABLE_AUTO_COLLECT = False     # 是否开启自动收集互联网谣言
+ENABLE_AUTO_COLLECT = True     # 是否开启自动收集互联网谣言
 AUTO_COLLECT_INTERVAL = 3600 * 24 # 自动收集间隔时间（秒），默认 24 小时
 
 # 超时配置 (Timeout)

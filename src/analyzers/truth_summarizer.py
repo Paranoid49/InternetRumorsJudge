@@ -27,24 +27,24 @@ class VerdictType(str, Enum):
 
 class FinalVerdict(BaseModel):
     summary: str = Field(
-        description="详细的核查报告。请按以下结构撰写：\n1. 证据概览（收到了多少证据，支持/反对情况）；\n2. 关键证据评估（指出权重最高的证据及其理由）；\n3. 综合推理（逻辑链条）；\n4. 最终结论陈述。"
+        description="面向用户的简洁报告（200-300字），直接回答：这个说法是真的吗？真相是什么？用通俗语言解释原因，最后给出明确结论。不要提及'证据'、'相关性'、'立场'等技术术语。"
     )
     verdict: VerdictType = Field(
-        description="最终的核查结论。请基于上述总结，从提供的6个选项中选择最贴切的一个。"
+        description="最终结论：真/很可能为真/假/很可能为假/存在争议/证据不足"
     )
     confidence: int = Field(
-        description="你对这个判断有多大的把握？(0-100)。\n注意：即使结论是'假'，如果你非常确定它是假的，也应该给高分（如 90-100）。只有当你觉得证据不足、不确定时才给低分。", 
-        ge=0, 
+        description="判断把握度(0-100)。确定结论给高分，不确定给低分。",
+        ge=0,
         le=100
     )
     risk_level: Literal["高", "中", "低"] = Field(
-        description="该谣言/信息的潜在危害程度。"
+        description="潜在危害程度"
     )
 
 class TruthSummarizer:
     """真相总结智能体"""
     
-    def __init__(self, model_name: str = None, temperature: float = 0.4):
+    def __init__(self, model_name: str = None, temperature: float = 0.1):
         if not config.API_KEY:
             raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量")
 
@@ -55,40 +55,39 @@ class TruthSummarizer:
             api_key=config.API_KEY,
             temperature=temperature,
             timeout=getattr(config, 'LLM_REQUEST_TIMEOUT', 30),
+            max_tokens=1024,  # 优化: 限制输出长度，提升响应速度
         )
 
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是事实核查的最终裁决员。你的任务是基于所有证据分析，给出综合结论。
+            ("system", """你是面向用户的真相核查助手。直接回答用户：这个说法是真的吗？
 
-                **重要：你必须严格返回符合 Pydantic 模型定义的 JSON 格式，包含 summary, verdict, confidence, risk_level 四个字段。**
-                其中 verdict 必须是 ["真", "很可能为真", "假", "很可能为假", "存在争议", "证据不足"] 中的一个。
+**写作要求：**
+1. 聚焦用户主张，直接回答真假
+2. 用通俗语言解释，不要技术术语
+3. 200-300字，简洁明了
 
-                **决策逻辑与步骤：**
-                1. **证据概览**：统计支持、反对、中立的证据数量。
-                2. **关键证据评估**：找出权威性最高且相关性高的证据。
-                3. **综合推理**：解释证据如何指向结论。
-                4. **定性判断**：
-                   - **假**：有明确、可信的证据直接反驳主张。
-                   - **很可能为假**：证据倾向于反驳，但并非绝对确凿。
-                   - **证据不足**：没有足够的相关证据做出判断。
-                   - **很可能为真**：证据倾向于支持，但并非绝对确凿。
-                   - **真**：有明确、可信的证据直接支持主张。
-                   - **存在争议**：有高质量的证据同时支持和对立。
-                
-                **输出 JSON 结构示例：**
-                {{
-                    "summary": "根据分析...",
-                    "verdict": "假",
-                    "confidence": 95,
-                    "risk_level": "低"
-                }}
-                """),
-            ("human", """**原始主张**：{claim}
+**决策标准：**
+- 假：有明确可信证据直接反驳
+- 很可能为假：证据倾向反驳
+- 证据不足：无足够相关证据
+- 很可能为真：证据倾向支持
+- 真：有明确可信证据直接支持
+- 存在争议：高质量证据对立
 
-                **证据分析结果**：
-                {evidence_context}
-                
-                请生成最终裁决报告。"""),
+**必须严格返回JSON，字段名必须完全匹配：**
+{{
+  "summary": "面向用户的报告...",
+  "verdict": "假",
+  "confidence": 95,
+  "risk_level": "低"
+}}
+"""),
+            ("human", """用户说法：{claim}
+
+参考信息：
+{evidence_context}
+
+返回JSON格式报告。"""),
         ])
         
         self.chain = self.prompt | self.llm.with_structured_output(FinalVerdict)
