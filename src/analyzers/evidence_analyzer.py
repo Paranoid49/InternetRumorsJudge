@@ -257,7 +257,8 @@ class EvidenceAnalyzer:
             for future in concurrent.futures.as_completed(future_to_evidence):
                 try:
                     assessment = future.result()
-                    all_assessments.append(assessment)
+                    if assessment is not None:  # 添加 None 检查
+                        all_assessments.append(assessment)
                 except Exception as e:
                     logger.error(f"证据分析失败: {e}")
 

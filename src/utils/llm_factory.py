@@ -2,8 +2,12 @@
 LLM 工厂模块
 
 提供统一的 LLM 初始化接口，避免在多个文件中重复 ChatOpenAI 初始化代码
+
+[v1.0.1] 新增 API 监控回调支持，自动记录 token 使用和成本
 """
+from typing import Optional, List
 from langchain_openai import ChatOpenAI
+from langchain_core.callbacks import BaseCallbackHandler
 
 from src import config
 
@@ -12,7 +16,9 @@ def create_dashscope_llm(
     model_name: str = None,
     temperature: float = 0.1,
     max_tokens: int = None,
-    timeout: int = None
+    timeout: int = None,
+    callbacks: Optional[List[BaseCallbackHandler]] = None,
+    enable_monitoring: bool = True
 ) -> ChatOpenAI:
     """
     创建 DashScope 兼容的 LLM 实例
@@ -25,6 +31,8 @@ def create_dashscope_llm(
         temperature: 温度参数，控制输出随机性（0.0-1.0），默认 0.1
         max_tokens: 最大输出 token 数，默认从 config 获取
         timeout: 请求超时时间（秒），默认从 config 获取
+        callbacks: 自定义回调列表
+        enable_monitoring: 是否启用 API 监控（默认 True）
 
     Returns:
         ChatOpenAI: 配置好的 LLM 实例
@@ -46,6 +54,19 @@ def create_dashscope_llm(
 
     model_name = model_name or config.MODEL_PARSER
 
+    # 准备回调列表
+    all_callbacks = callbacks or []
+
+    # 添加 API 监控回调（v1.0.1）
+    if enable_monitoring:
+        try:
+            from src.observability.api_monitor_callback import get_api_monitor_callback
+            monitor_callback = get_api_monitor_callback()
+            all_callbacks.append(monitor_callback)
+        except Exception as e:
+            logger = __import__('logging').getLogger("LLMFactory")
+            logger.warning(f"无法添加 API 监控回调: {e}")
+
     llm = ChatOpenAI(
         model=model_name,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -53,6 +74,7 @@ def create_dashscope_llm(
         temperature=temperature,
         timeout=timeout or getattr(config, 'LLM_REQUEST_TIMEOUT', 30),
         max_tokens=max_tokens or getattr(config, 'MAX_TOKENS', 2048),
+        callbacks=all_callbacks if all_callbacks else None,
     )
 
     return llm

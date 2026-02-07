@@ -17,11 +17,15 @@ class TestCacheManager:
     @pytest.fixture
     def cache_manager(self, tmp_path):
         """创建测试用的缓存管理器"""
-        return CacheManager(
+        manager = CacheManager(
             cache_dir=str(tmp_path / "cache"),
             vector_cache_dir=str(tmp_path / "semantic_cache"),
             embeddings=None  # 不使用语义缓存
         )
+        # 禁用版本管理器以简化测试
+        manager._version_manager = None
+        manager._current_kb_version = None
+        return manager
 
     @pytest.fixture
     def sample_verdict(self):

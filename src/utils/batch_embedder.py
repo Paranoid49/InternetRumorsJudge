@@ -7,6 +7,10 @@
 - 全局实例使用线程安全的单例模式
 - 缓存访问使用锁保护
 - 防止并发初始化问题
+
+[v1.0.1 升级] API 监控集成：
+- 自动记录 Embedding API 调用
+- 统计 token 使用和成本
 """
 import logging
 import time
@@ -26,6 +30,7 @@ class BatchEmbedder:
     1. 缓存已计算的Embedding
     2. 批量提交Embedding请求
     3. 减少API调用次数
+    4. [v1.0.1] 自动记录 API 调用
 
     线程安全保证：
     - 使用RLock保护缓存访问
@@ -33,12 +38,13 @@ class BatchEmbedder:
     - 支持高并发场景
     """
 
-    def __init__(self, embeddings):
+    def __init__(self, embeddings, enable_monitoring: bool = True):
         """
         初始化批量Embedder
 
         Args:
             embeddings: LangChain Embeddings 对象
+            enable_monitoring: 是否启用 API 监控（默认 True）
         """
         self.embeddings = embeddings
         self.cache = OrderedDict()  # 有序缓存，便于管理
@@ -48,6 +54,50 @@ class BatchEmbedder:
         self._cache_hits = 0
         self._cache_misses = 0
         self._stats_lock = threading.Lock()  # 统计信息锁
+
+        # API 监控器（v1.0.1）
+        self._monitor = None
+        if enable_monitoring:
+            try:
+                from src.observability.api_monitor import get_api_monitor
+                self._monitor = get_api_monitor()
+                logger.debug("API 监控已启用")
+            except Exception as e:
+                logger.warning(f"无法初始化 API 监控: {e}")
+
+    def _record_embedding_api(self, num_texts: int, num_tokens: int = 0):
+        """
+        记录 Embedding API 调用
+
+        Args:
+            num_texts: 文本数量
+            num_tokens: token 总数（如果可获取）
+        """
+        if self._monitor is None:
+            return
+
+        try:
+            # Embedding API 通常不返回 token 数，需要估算
+            # 粗略估算：中文约 1.5 字符 = 1 token
+            if num_tokens == 0:
+                num_tokens = num_texts * 200  # 平均每个文本 200 tokens
+
+            # 记录 API 调用
+            self._monitor.record_api_call(
+                provider='dashscope',
+                model='text-embedding-v4',
+                endpoint='embeddings',
+                input_tokens=num_tokens,
+                output_tokens=0  # Embedding 无输出 tokens
+            )
+
+            logger.debug(
+                f"Embedding API 已记录: {num_texts} 文本, "
+                f"约 {num_tokens} tokens"
+            )
+
+        except Exception as e:
+            logger.error(f"记录 Embedding API 调用时出错: {e}")
 
     def embed_texts(self, texts: List[str], use_cache: bool = True) -> List[List[float]]:
         """
@@ -88,6 +138,9 @@ class BatchEmbedder:
                 # 尝试使用embed_documents（批量）
                 logger.info(f"批量计算 {len(uncached_texts)} 个文本的Embedding")
                 new_embeddings = self.embeddings.embed_documents(uncached_texts)
+
+                # 记录 API 调用（v1.0.1）
+                self._record_embedding_api(len(uncached_texts))
 
                 # 存入缓存（线程安全）
                 with self._cache_lock:

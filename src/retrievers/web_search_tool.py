@@ -16,12 +16,24 @@ class WebSearchTool:
     """
     联网搜索工具类
     封装 LangChain 适配的 Tavily AI (首选) 和 DuckDuckGo 搜索。
+
+    [v1.0.1] 新增 API 监控支持
     """
-    
-    def __init__(self, max_results: int = 5):
+
+    def __init__(self, max_results: int = 5, enable_monitoring: bool = True):
         self.max_results = max_results
         self.tavily_tool = None
-        
+
+        # API 监控器（v1.0.1）
+        self._monitor = None
+        if enable_monitoring:
+            try:
+                from src.observability.api_monitor import get_api_monitor
+                self._monitor = get_api_monitor()
+                logger.debug("API 监控已启用")
+            except Exception as e:
+                logger.warning(f"无法初始化 API 监控: {e}")
+
         # 确保环境变量已设置，LangChain 的 TavilySearchResults 会自动读取 TAVILY_API_KEY
         if config.TAVILY_API_KEY:
             os.environ["TAVILY_API_KEY"] = config.TAVILY_API_KEY
@@ -33,6 +45,32 @@ class WebSearchTool:
                 logger.info("LangChain Tavily 搜索工具初始化成功。")
             except Exception as e:
                 logger.error(f"LangChain Tavily 搜索工具初始化失败: {e}")
+
+    def _record_search_api(self, provider: str, num_results: int):
+        """
+        记录搜索 API 调用
+
+        Args:
+            provider: 提供商（tavily 或 ddg）
+            num_results: 结果数量
+        """
+        if self._monitor is None:
+            return
+
+        try:
+            # Tavily 按次计费，DuckDuckGo 免费
+            if provider == 'tavily':
+                cost = self._monitor.record_api_call(
+                    provider='tavily',
+                    model='search',
+                    endpoint='search',
+                    input_tokens=0,
+                    output_tokens=0
+                )
+                logger.debug(f"Tavily 搜索已记录: {num_results} 结果, cost={cost:.6f}元")
+
+        except Exception as e:
+            logger.error(f"记录搜索 API 调用时出错: {e}")
 
     def search(self, query: str) -> List[Dict[str, Any]]:
         """
@@ -74,6 +112,8 @@ class WebSearchTool:
                 
                 if results:
                     logger.info(f"Tavily AI 搜索完成，找到 {len(results)} 条线索。")
+                    # 记录 API 调用（v1.0.1）
+                    self._record_search_api('tavily', len(results))
                     return results
             except Exception as e:
                 logger.error(f"Tavily AI 搜索发生错误: {e}，将尝试备用方案。")
@@ -105,9 +145,10 @@ class WebSearchTool:
                         break
                         
             logger.info(f"DuckDuckGo 搜索完成，找到 {len(results)} 条线索。")
+            # DuckDuckGo 免费，不记录成本
         except Exception as e:
             logger.error(f"DuckDuckGo 搜索发生错误: {e}")
-            
+
         return results
 
 if __name__ == "__main__":

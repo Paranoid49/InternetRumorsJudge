@@ -95,13 +95,14 @@ def mock_evidence_analyzer():
 
     def mock_analyze(claim, evidence, index):
         return EvidenceAssessment(
+            id=index,
             relevance="高",
             stance="支持",
-            complexity_label=None,
+            complexity_label="无特殊情况",
+            reason="测试分析",
+            supporting_quote="关键引用内容",
             confidence=0.9,
-            authority_score=4,
-            reasoning="测试分析",
-            key_points=["关键点1", "关键点2"]
+            authority_score=4
         )
 
     return mock_analyze
