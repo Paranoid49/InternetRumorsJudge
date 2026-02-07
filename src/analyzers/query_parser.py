@@ -1,16 +1,15 @@
 import logging
-import sys
-from pathlib import Path
 from typing import Literal
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# 设置项目路径（v0.9.0: 使用统一路径工具）
+from src.utils.path_utils import setup_project_path
+setup_project_path()
 
 from src import config
+from src.utils.llm_factory import create_parser_llm
 
 logger = logging.getLogger("QueryParser")
 
@@ -30,15 +29,8 @@ class QueryAnalysis(BaseModel):
 
 
 def build_chain():
-    if not config.API_KEY:
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量")
-    model = ChatOpenAI(
-        model=config.MODEL_PARSER,
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        api_key=config.API_KEY,
-        temperature=0.5,
-        timeout=getattr(config, 'LLM_REQUEST_TIMEOUT', 30),
-    )
+    # 使用统一的 LLM 工厂（v0.9.0）
+    model = create_parser_llm(temperature=0.5)
     structured_model = model.with_structured_output(QueryAnalysis)
     prompt_template = ChatPromptTemplate.from_messages([
         ("system", """你是一个专业的事实核查助手。请严格分析用户的陈述，并提取关键信息。

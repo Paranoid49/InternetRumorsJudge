@@ -1,13 +1,12 @@
 import logging
-import sys
-from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 from difflib import SequenceMatcher
 
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# 设置项目路径（v0.9.0: 使用统一路径工具）
+from src.utils.path_utils import setup_project_path
+setup_project_path()
 
 from src.retrievers.evidence_retriever import EvidenceKnowledgeBase
 from src.retrievers.web_search_tool import WebSearchTool

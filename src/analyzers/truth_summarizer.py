@@ -1,17 +1,16 @@
 import logging
-import sys
-from pathlib import Path
 from typing import List, Literal, Optional
 from enum import Enum
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# 设置项目路径（v0.9.0: 使用统一路径工具）
+from src.utils.path_utils import setup_project_path
+setup_project_path()
 
 from src import config
 from src.analyzers.evidence_analyzer import EvidenceAssessment
+from src.utils.llm_factory import create_summarizer_llm
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -45,18 +44,8 @@ class TruthSummarizer:
     """真相总结智能体"""
     
     def __init__(self, model_name: str = None, temperature: float = 0.1):
-        if not config.API_KEY:
-            raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量")
-
-        model_name = model_name or config.MODEL_SUMMARIZER
-        self.llm = ChatOpenAI(
-            model=model_name,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            api_key=config.API_KEY,
-            temperature=temperature,
-            timeout=getattr(config, 'LLM_REQUEST_TIMEOUT', 30),
-            max_tokens=1024,  # 优化: 限制输出长度，提升响应速度
-        )
+        # 使用统一的 LLM 工厂（v0.9.0）
+        self.llm = create_summarizer_llm(temperature=temperature)
 
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """你是面向用户的真相核查助手。直接回答用户：这个说法是真的吗？

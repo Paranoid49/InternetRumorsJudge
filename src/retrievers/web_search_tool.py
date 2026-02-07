@@ -1,13 +1,12 @@
 import logging
-import sys
 import os
-from pathlib import Path
 from typing import List, Dict, Any
 from ddgs import DDGS
 from langchain_tavily import TavilySearch
 
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# 设置项目路径（v0.9.0: 使用统一路径工具）
+from src.utils.path_utils import setup_project_path
+setup_project_path()
 
 from src import config
 

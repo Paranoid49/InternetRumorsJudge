@@ -1,16 +1,16 @@
 import json
 import logging
-import sys
 import time
 from pathlib import Path
 from datetime import datetime
 
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# 设置项目路径（v0.9.0: 使用统一路径工具）
+from src.utils.path_utils import setup_project_path, get_project_root
+setup_project_path()
 
 from src.retrievers.evidence_retriever import EvidenceKnowledgeBase
 from src import config
-from langchain_openai import ChatOpenAI
+from src.utils.llm_factory import create_dashscope_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # 导入版本管理器（可选）
@@ -23,8 +23,8 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("KnowledgeIntegrator")
 
-# 获取项目根目录
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# 获取项目根目录（v0.9.0: 使用统一路径工具）
+PROJECT_ROOT = get_project_root()
 
 class KnowledgeIntegrator:
     def __init__(self,
@@ -41,15 +41,10 @@ class KnowledgeIntegrator:
         self.rumor_data_dir = Path(rumor_data_dir)
         self.rumor_data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Configure LLM
-        if not config.API_KEY:
-             raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量或 config.API_KEY")
-
-        self.llm = ChatOpenAI(
-            model=model_name,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            api_key=config.API_KEY,
-            temperature=0.7,
+        # 使用统一的 LLM 工厂（v0.9.0）
+        self.llm = create_dashscope_llm(
+            model_name=model_name,
+            temperature=0.7
         )
 
     def generate_knowledge_content(self, query: str, comment: str) -> str:

@@ -1,16 +1,15 @@
 import logging
-import sys
 import concurrent.futures
-from pathlib import Path
 from typing import List, Literal, Dict, Optional
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# 设置项目路径（v0.9.0: 使用统一路径工具）
+from src.utils.path_utils import setup_project_path
+setup_project_path()
 
 from src import config
+from src.utils.llm_factory import create_analyzer_llm
 
 # 导入重试策略（可选）
 try:
@@ -18,6 +17,13 @@ try:
     RETRY_AVAILABLE = True
 except ImportError:
     RETRY_AVAILABLE = False
+
+# 导入并行度配置（v0.6.0新增）
+try:
+    from src.core.parallelism_config import get_parallelism_config
+    PARALLELISM_CONFIG_AVAILABLE = True
+except ImportError:
+    PARALLELISM_CONFIG_AVAILABLE = False
 
 logger = logging.getLogger("EvidenceAnalyzer")
 
@@ -42,25 +48,14 @@ class EvidenceAnalyzer:
     """证据分析智能体"""
     
     def __init__(self, model_name: str = None, temperature: float = 0.1):  # 优化: 从 0.3 降低到 0.1
-        if not config.API_KEY:
-            raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量")
-
-        model_name = model_name or config.MODEL_ANALYZER
-
         # 优化: 添加快速模式配置
         fast_mode = getattr(config, 'ENABLE_FAST_MODE', False)
         if fast_mode:
             temperature = 0.0  # 快速模式使用确定性输出
             logger.info("启用快速模式：temperature=0.0")
 
-        self.llm = ChatOpenAI(
-            model=model_name,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            api_key=config.API_KEY,
-            temperature=temperature,
-            timeout=getattr(config, 'LLM_REQUEST_TIMEOUT', 30),
-            max_tokens=getattr(config, 'ANALYZER_MAX_TOKENS', 1024),  # 优化: 限制输出长度
-        )
+        # 使用统一的 LLM 工厂（v0.9.0）
+        self.llm = create_analyzer_llm(temperature=temperature)
         
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """你是一个专业的谣言核查分析师。你的任务是深入评估给定的证据相对于某个谣言主张的各项指标，特别是要识别其中的微妙和复杂情况。
@@ -200,10 +195,21 @@ class EvidenceAnalyzer:
         logger.info(f"证据数量({count})超过分片阈值({chunk_size})，启动并行分析...")
         chunks = [evidence_list[i:i + chunk_size] for i in range(0, count, chunk_size)]
         
+        # [v0.6.0] 使用动态并行度配置
+        if PARALLELISM_CONFIG_AVAILABLE:
+            max_workers = get_parallelism_config().get_adaptive_workers(
+                task_count=len(chunks),
+                task_type='evidence_analyzer',
+                min_workers=1
+            )
+            logger.info(f"动态并行度: {max_workers} (批次数: {len(chunks)})")
+        else:
+            max_workers = min(len(chunks), 5)  # 回退到硬编码值
+
         all_assessments = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(chunks), 5)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_chunk = {
-                executor.submit(self._analyze_batch, claim, chunk, i * chunk_size): i 
+                executor.submit(self._analyze_batch, claim, chunk, i * chunk_size): i
                 for i, chunk in enumerate(chunks)
             }
             
@@ -229,8 +235,19 @@ class EvidenceAnalyzer:
 
         logger.info(f"启用单证据并行分析: {len(evidence_list)} 条证据")
 
+        # [v0.6.0] 使用动态并行度配置
+        if PARALLELISM_CONFIG_AVAILABLE:
+            max_workers = get_parallelism_config().get_adaptive_workers(
+                task_count=len(evidence_list),
+                task_type='evidence_analyzer',
+                min_workers=1
+            )
+            logger.info(f"动态并行度: {max_workers} (证据数: {len(evidence_list)})")
+        else:
+            max_workers = min(len(evidence_list), 5)  # 回退到硬编码值
+
         all_assessments = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(evidence_list), 5)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 每个证据单独提交
             future_to_evidence = {
                 executor.submit(self._analyze_single_evidence, claim, ev, i): i

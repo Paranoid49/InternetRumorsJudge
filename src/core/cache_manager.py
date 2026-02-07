@@ -2,6 +2,7 @@ import hashlib
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any
@@ -24,6 +25,19 @@ except ImportError:
 logger = logging.getLogger("CacheManager")
 
 class CacheManager:
+    """
+    缓存管理器（线程安全）
+
+    功能：
+    1. 精确匹配缓存
+    2. 语义相似度缓存
+    3. 版本感知缓存失效
+
+    [v0.3.0 升级] 线程安全改进：
+    - vector_cache延迟初始化使用锁保护
+    - 版本检查使用锁保护
+    """
+
     def __init__(self, cache_dir: str = None, vector_cache_dir: str = None, embeddings: Any = None):
         # 获取项目根目录
         project_root = Path(__file__).resolve().parent.parent.parent
@@ -40,12 +54,15 @@ class CacheManager:
         self.embeddings = embeddings
         self.vector_cache_dir = vector_cache_dir
         self._vector_cache = None
+        self._vector_cache_lock = threading.Lock()  # 向量缓存初始化锁
+
         # 从 config 读取语义匹配阈值
         self.semantic_threshold = getattr(config, 'SEMANTIC_CACHE_THRESHOLD', 0.96)
 
         # 初始化版本管理器（支持缓存失效）
         self._version_manager = None
         self._current_kb_version = None
+        self._version_lock = threading.Lock()  # 版本检查锁
         if VersionManager is not None:
             storage_base = project_root / "storage"
             self._version_manager = VersionManager(base_dir=storage_base)
@@ -54,17 +71,21 @@ class CacheManager:
 
     @property
     def vector_cache(self) -> Chroma:
-        """初始化或获取语义缓存向量库"""
+        """初始化或获取语义缓存向量库（线程安全）"""
         if self._vector_cache is None and self.embeddings:
-            try:
-                self._vector_cache = Chroma(
-                    persist_directory=self.vector_cache_dir,
-                    embedding_function=self.embeddings,
-                    collection_name="semantic_cache",
-                    collection_metadata={"hnsw:space": "cosine"}
-                )
-            except Exception as e:
-                logger.error(f"语义缓存向量库初始化失败: {e}")
+            with self._vector_cache_lock:
+                # 双重检查
+                if self._vector_cache is None and self.embeddings:
+                    try:
+                        self._vector_cache = Chroma(
+                            persist_directory=self.vector_cache_dir,
+                            embedding_function=self.embeddings,
+                            collection_name="semantic_cache",
+                            collection_metadata={"hnsw:space": "cosine"}
+                        )
+                        logger.info("语义缓存向量库初始化成功")
+                    except Exception as e:
+                        logger.error(f"语义缓存向量库初始化失败: {e}")
         return self._vector_cache
 
     def _generate_key(self, query: str) -> str:
@@ -132,24 +153,25 @@ class CacheManager:
             return None
 
     def _is_version_changed(self) -> bool:
-        """检查知识库版本是否变化"""
+        """检查知识库版本是否变化（线程安全）"""
         if not self._version_manager:
             return False
 
-        current_version = self._version_manager.get_current_version()
+        with self._version_lock:
+            current_version = self._version_manager.get_current_version()
 
-        # 版本变化检测
-        if self._current_kb_version != current_version:
-            if current_version:
-                logger.info(f"知识库版本变化: {self._current_kb_version.version_id if self._current_kb_version else 'None'} -> {current_version.version_id}")
-            else:
-                logger.info(f"知识库版本变化: {self._current_kb_version.version_id if self._current_kb_version else 'None'} -> None")
+            # 版本变化检测
+            if self._current_kb_version != current_version:
+                if current_version:
+                    logger.info(f"知识库版本变化: {self._current_kb_version.version_id if self._current_kb_version else 'None'} -> {current_version.version_id}")
+                else:
+                    logger.info(f"知识库版本变化: {self._current_kb_version.version_id if self._current_kb_version else 'None'} -> None")
 
-            # 更新当前版本
-            self._current_kb_version = current_version
-            return True
+                # 更新当前版本
+                self._current_kb_version = current_version
+                return True
 
-        return False
+            return False
 
     def _is_cache_version_valid(self, cached_data: dict) -> bool:
         """检查缓存条目的版本是否有效"""

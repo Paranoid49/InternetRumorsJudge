@@ -11,6 +11,13 @@ from datetime import datetime
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# 导入线程安全工具
+try:
+    from src.core.thread_utils import get_lock_manager, ThreadSafeLazyLoader
+    THREAD_UTILS_AVAILABLE = True
+except ImportError:
+    THREAD_UTILS_AVAILABLE = False
+
 # 修复控制台中文乱码
 try:
     from src.utils import encoding_fix
@@ -122,20 +129,25 @@ except ImportError as e:
 class RumorJudgeEngine:
     """
     谣言核查核心引擎
-    
+
     职责:
     1. 编排 pipeline 流程
     2. 管理组件生命周期
     3. 统一错误处理
     4. 返回标准化的 UnifiedVerificationResult
+
+    线程安全设计：
+    - 单例创建使用独立的锁
+    - 组件初始化使用独立的锁
+    - 后台知识集成使用独立的锁
+    - 所有锁通过LockManager管理，避免死锁
     """
     _instance = None
-    _lock = threading.Lock()
-    _integration_lock = threading.Lock() # 新增：用于后台知识集成的线程锁
+    _singleton_lock = threading.Lock()  # 单例创建专用锁
 
     def __new__(cls):
         """实现单例模式，确保全局只有一个引擎实例"""
-        with cls._lock:
+        with cls._singleton_lock:
             if cls._instance is None:
                 cls._instance = super(RumorJudgeEngine, cls).__new__(cls)
                 cls._instance._initialized = False
@@ -144,7 +156,16 @@ class RumorJudgeEngine:
     def __init__(self):
         if self._initialized:
             return
-            
+
+        # 初始化锁管理器（如果可用）
+        if THREAD_UTILS_AVAILABLE:
+            self._lock_mgr = get_lock_manager()
+        else:
+            logger.warning("线程安全工具不可用，使用基础锁机制")
+            self._lock_mgr = None
+            self._init_lock = threading.RLock()
+            self._integration_lock = threading.RLock()
+
         # 延迟加载标志
         self._components_initialized = False
         self._kb = None
@@ -153,7 +174,13 @@ class RumorJudgeEngine:
         self._knowledge_integrator = None
         self._hybrid_retriever = None
         self._parser_chain = None
-        
+
+        # [v0.5.0] 初始化协调器占位符
+        self._query_processor = None
+        self._retrieval_coordinator = None
+        self._analysis_coordinator = None
+        self._verdict_generator = None
+
         self._initialized = True
         logger.info("RumorJudgeEngine 单例实例已创建 (组件将延迟初始化)")
 
@@ -161,38 +188,78 @@ class RumorJudgeEngine:
         """延迟初始化核心组件，确保在真正需要时才加载资源"""
         if self._components_initialized:
             return
-            
-        with self._lock:
+
+        # 使用细粒度锁避免与其他锁冲突
+        if THREAD_UTILS_AVAILABLE:
+            lock_ctx = self._lock_mgr.acquire("component_init", timeout=30)
+        else:
+            lock_ctx = self._init_lock
+
+        with lock_ctx:
+            # 双重检查
             if self._components_initialized:
                 return
-                
+
             logger.info("正在执行组件延迟初始化...")
             try:
                 self._kb = EvidenceKnowledgeBase()
                 self._cache_manager = CacheManager(embeddings=self._kb.embeddings)
                 self._web_search_tool = WebSearchTool()
                 self._knowledge_integrator = KnowledgeIntegrator()
-                
+
                 # 初始化混合检索器
                 self._hybrid_retriever = HybridRetriever(
-                    local_kb=self._kb, 
+                    local_kb=self._kb,
                     web_tool=self._web_search_tool
                 )
-                
+
                 self._ensure_kb_ready()
-                
+
                 # 初始化解析器链
                 try:
                     self._parser_chain = build_parser_chain()
                 except Exception as e:
                     logger.error(f"解析器初始化失败: {e}")
                     self._parser_chain = None
-                
+
+                # [v0.5.0] 初始化协调器
+                self._init_coordinators()
+
                 self._components_initialized = True
                 logger.info("所有核心组件初始化完成")
             except Exception as e:
                 logger.error(f"组件延迟初始化过程中出错: {e}")
                 raise
+
+    def _init_coordinators(self):
+        """初始化协调器（v0.5.0 新增，v0.5.1 增强）"""
+        # 导入协调器
+        try:
+            from src.core.coordinators import (
+                QueryProcessor,
+                RetrievalCoordinator,
+                AnalysisCoordinator,
+                VerdictGenerator
+            )
+            # [v0.5.1] 传递hybrid_retriever给QueryProcessor以支持并行检索
+            self._query_processor = QueryProcessor(
+                parser_chain=self._parser_chain,
+                cache_manager=self._cache_manager,
+                hybrid_retriever=self._hybrid_retriever
+            )
+            self._retrieval_coordinator = RetrievalCoordinator(
+                hybrid_retriever=self._hybrid_retriever,
+                kb=self._kb
+            )
+            self._analysis_coordinator = AnalysisCoordinator()
+            self._verdict_generator = VerdictGenerator()
+            logger.info("协调器初始化成功")
+        except ImportError as e:
+            logger.warning(f"协调器导入失败: {e}")
+            self._query_processor = None
+            self._retrieval_coordinator = None
+            self._analysis_coordinator = None
+            self._verdict_generator = None
 
     @property
     def is_ready(self) -> bool:
@@ -246,6 +313,11 @@ class RumorJudgeEngine:
         1. 结论必须是绝对定性 ("真" 或 "假")
         2. 置信度 >= config.AUTO_INTEGRATE_MIN_CONFIDENCE
         3. 必须包含至少 config.AUTO_INTEGRATE_MIN_EVIDENCE 条支持/反对的证据
+
+        [v0.3.0 升级] 线程安全改进：
+        - 使用上下文管理器自动释放锁
+        - 避免手动release导致的锁泄漏
+        - 支持超时机制防止死锁
         """
         # 从 config 读取阈值
         min_confidence = getattr(config, 'AUTO_INTEGRATE_MIN_CONFIDENCE', 90)
@@ -268,47 +340,57 @@ class RumorJudgeEngine:
 
         if result.is_web_search:
             logger.info(f"符合严格自动沉淀条件，尝试启动后台集成线程: {result.query}")
-            
+
             def background_integration():
-                # 使用非阻塞方式获取锁，如果已经有集成任务在跑，则放弃本次任务以节省资源
-                if not self._integration_lock.acquire(blocking=False):
-                    logger.warning("已有知识集成任务在运行中，跳过本次自动沉淀。")
-                    return
-                
+                """后台线程执行知识集成"""
+                # 使用上下文管理器自动管理锁
                 try:
-                    logger.info("开始执行后台知识沉淀流程...")
-                    # 1. 构造集成内容
-                    combined_evidence = "\n\n".join([
-                        f"来源: {ev['metadata']['source']}\n内容: {ev['content']}" 
-                        for ev in result.retrieved_evidence
-                    ])
-                    
-                    content = self.knowledge_integrator.generate_knowledge_content(
-                        query=result.query, 
-                        comment=f"系统自动联网核查结果：\n结论：{result.final_verdict}\n总结：{result.summary_report}\n\n外部参考：\n{combined_evidence}"
-                    )
-                    
-                    if content:
-                        timestamp = int(datetime.now().timestamp())
-                        safe_title = "".join([c for c in result.query if c.isalnum()])[:20]
-                        # [方案 B] 添加元数据标记前缀
-                        filename = f"AUTO_GEN_{timestamp}_{safe_title}.txt"
-                        file_path = self.knowledge_integrator.rumor_data_dir / filename
-                        
-                        with open(file_path, 'w', encoding='utf-8') as f:
-                            f.write(content)
-                        
-                        logger.info(f"✅ 自动生成知识文件 (带标记): {filename}")
-                        
-                        # 2. 增量重构向量库
-                        logger.info("开始增量更新向量知识库...")
-                        self.knowledge_integrator.rebuild_knowledge_base()
-                        logger.info("后台知识集成与重构全部完成！")
+                    # 尝试非阻塞获取锁
+                    if THREAD_UTILS_AVAILABLE:
+                        # 使用LockManager，超时1秒
+                        lock_ctx = self._lock_mgr.acquire("knowledge_integration", timeout=1.0)
+                    else:
+                        # 回退到传统锁
+                        lock_ctx = self._integration_lock
+                        if not lock_ctx.acquire(blocking=False):
+                            logger.warning("已有知识集成任务在运行中，跳过本次自动沉淀。")
+                            return
+
+                    with lock_ctx:
+                        logger.info("开始执行后台知识沉淀流程...")
+                        # 1. 构造集成内容
+                        combined_evidence = "\n\n".join([
+                            f"来源: {ev['metadata']['source']}\n内容: {ev['content']}"
+                            for ev in result.retrieved_evidence
+                        ])
+
+                        content = self.knowledge_integrator.generate_knowledge_content(
+                            query=result.query,
+                            comment=f"系统自动联网核查结果：\n结论：{result.final_verdict}\n总结：{result.summary_report}\n\n外部参考：\n{combined_evidence}"
+                        )
+
+                        if content:
+                            timestamp = int(datetime.now().timestamp())
+                            safe_title = "".join([c for c in result.query if c.isalnum()])[:20]
+                            # [方案 B] 添加元数据标记前缀
+                            filename = f"AUTO_GEN_{timestamp}_{safe_title}.txt"
+                            file_path = self.knowledge_integrator.rumor_data_dir / filename
+
+                            with open(file_path, 'w', encoding='utf-8') as f:
+                                f.write(content)
+
+                            logger.info(f"✅ 自动生成知识文件 (带标记): {filename}")
+
+                            # 2. 增量重构向量库
+                            logger.info("开始增量更新向量知识库...")
+                            self.knowledge_integrator.rebuild_knowledge_base()
+                            logger.info("后台知识集成与重构全部完成！")
+
+                except TimeoutError:
+                    logger.warning("获取知识集成锁超时，跳过本次自动沉淀")
                 except Exception as e:
                     logger.error(f"后台知识集成失败: {e}")
-                finally:
-                    # 无论成功失败，最后都要释放锁
-                    self._integration_lock.release()
+                # 锁会自动释放，无需手动release
 
             # 启动线程
             thread = threading.Thread(target=background_integration)
@@ -317,190 +399,197 @@ class RumorJudgeEngine:
             logger.info("已将集成任务分发至后台线程。")
 
     def run(self, query: str, use_cache: bool = True) -> UnifiedVerificationResult:
-        """执行完整的核查流程"""
+        """
+        执行完整的核查流程
+
+        [v0.5.1] 完全使用协调器模式，移除legacy实现
+        [v0.5.2] 添加协调器可用性检查
+        """
         start_time = datetime.now()
         logger.info(f"开始核查请求: {query}")
+
+        # 确保组件已初始化
+        self._lazy_init()
+
+        # 检查协调器是否可用
+        if not self._use_coordinators():
+            logger.error("协调器未正确初始化，无法执行核查")
+            result = UnifiedVerificationResult(query=query)
+            result.final_verdict = "系统错误"
+            result.summary_report = "协调器初始化失败，请检查系统配置"
+            result.is_fallback = True
+            result.add_metadata(PipelineStage.PARSING, False, "协调器未初始化")
+            return result
+
+        # [v0.5.1] 使用协调器模式
+        return self._run_with_coordinators(query, use_cache, start_time)
+
+    def _use_coordinators(self) -> bool:
+        """检查是否使用协调器模式（v0.5.0）"""
+        # 检查所有协调器是否已初始化
+        return all([
+            self._query_processor is not None,
+            self._retrieval_coordinator is not None,
+            self._analysis_coordinator is not None,
+            self._verdict_generator is not None
+        ])
+
+    def _run_with_coordinators(
+        self,
+        query: str,
+        use_cache: bool,
+        start_time: datetime
+    ) -> UnifiedVerificationResult:
+        """
+        使用协调器模式执行核查（v0.5.1 增强版）
+
+        这个版本使用协调器模式，支持并行解析、解析词补测、去重等完整功能
+        [v0.5.2] 添加协调器可用性检查
+        """
         result = UnifiedVerificationResult(query=query)
-        
-        # 1. 缓存检查
+
+        # [v0.5.2] 二次检查协调器可用性
+        if not all([
+            self._query_processor is not None,
+            self._retrieval_coordinator is not None,
+            self._analysis_coordinator is not None,
+            self._verdict_generator is not None
+        ]):
+            logger.error("_run_with_coordinators: 协调器未正确初始化")
+            result.final_verdict = "系统错误"
+            result.summary_report = "协调器初始化失败"
+            result.is_fallback = True
+            result.add_metadata(PipelineStage.PARSING, False, "协调器未初始化")
+            return result
+
+        # 阶段1: 查询处理（解析 + 缓存检查）
+        logger.info("阶段1: 查询处理")
+
+        # [v0.5.1] 使用并行解析和检索
+        parsed, local_docs = self._query_processor.parse_with_parallel_retrieval(query)
+
+        if parsed:
+            result.entity = parsed.entity
+            result.claim = parsed.claim
+            result.category = parsed.category
+            result.add_metadata(PipelineStage.PARSING, True)
+
+        # 检查缓存（在解析后）
         if use_cache:
-            try:
-                cached_verdict = self.cache_manager.get_verdict(query)
-                if cached_verdict:
-                    logger.info("命中缓存，返回预存结果。")
-                    result.is_cached = True
-                    result.final_verdict = cached_verdict.verdict.value
-                    result.confidence_score = cached_verdict.confidence
-                    result.risk_level = cached_verdict.risk_level
-                    result.summary_report = cached_verdict.summary
-                    result.add_metadata(PipelineStage.CACHE_CHECK, True, duration=(datetime.now() - start_time).total_seconds() * 1000)
-                    return result
-                logger.info("未命中缓存，进入实时核查。")
-                result.add_metadata(PipelineStage.CACHE_CHECK, True) # Cache miss but success check
-            except Exception as e:
-                logger.error(f"缓存检查失败: {e}")
-                result.add_metadata(PipelineStage.CACHE_CHECK, False, str(e))
+            cached = self._query_processor.check_cache(query)
+            if cached:
+                result.is_cached = True
+                result.final_verdict = cached.verdict.value
+                result.confidence_score = cached.confidence
+                result.risk_level = cached.risk_level
+                result.summary_report = cached.summary
+                result.add_metadata(
+                    PipelineStage.CACHE_CHECK,
+                    True,
+                    duration=(datetime.now() - start_time).total_seconds() * 1000
+                )
+                return result
+            else:
+                result.add_metadata(PipelineStage.CACHE_CHECK, True)
         else:
-             logger.info("跳过缓存检查。")
-             result.add_metadata(PipelineStage.CACHE_CHECK, True, "Cache skipped by request")
+            result.add_metadata(PipelineStage.CACHE_CHECK, True, "Cache skipped")
 
-        # 2. 查询解析与本地初步检索并行执行
-        parse_start = datetime.now()
-        logger.info("正在执行查询解析与本地检索并行化...")
-        
-        if not self.parser_chain:
-            logger.error("解析器未初始化！")
-            result.add_metadata(PipelineStage.PARSING, False, "解析器未初始化")
-            return result
-            
-        try:
-            # 使用线程池并行执行：解析意图 VS 原始词本地检索
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                # 任务 1: LLM 解析意图
-                parse_future = executor.submit(self.parser_chain.invoke, {"query": query})
-                # 任务 2: 原始词直接去本地库查一把（抢跑）
-                raw_search_future = executor.submit(self.hybrid_retriever.search_local, query)
-                
-                # 等待解析完成
-                analysis: QueryAnalysis = parse_future.result()
-                result.entity = analysis.entity
-                result.claim = analysis.claim
-                result.category = analysis.category
-                logger.info(f"意图解析完成: 实体='{result.entity}', 主张='{result.claim}'")
-                result.add_metadata(PipelineStage.PARSING, True, duration=(datetime.now() - parse_start).total_seconds() * 1000)
-                
-                # 获取抢跑检索结果
-                local_docs = raw_search_future.result()
-                if local_docs:
-                    logger.info(f"原始词抢跑检索命中 {len(local_docs)} 条证据")
-            
-            # 3. 混合证据检索 (基于已有的解析结果进行补测)
-            retrieval_start = datetime.now()
-            
-            # 如果解析词和原始词不同，用解析词补测本地库
-            parsed_query = f"{result.entity} {result.claim}" if result.entity and result.claim else ""
-            if parsed_query and parsed_query != query:
-                logger.info(f"尝试解析词补测本地检索: '{parsed_query}'")
-                local_docs.extend(self.hybrid_retriever.search_local(parsed_query))
-            
-            # 汇总本地结果并去重
-            unique_local_docs = self.hybrid_retriever._deduplicate_docs(local_docs)
-            
-            # 调用混合检索（传入已有的本地文档，决定是否触发联网）
-            search_query = parsed_query if parsed_query else query
-            documents = self.hybrid_retriever.search_hybrid(search_query, existing_local_docs=unique_local_docs)
-            
-            # 更新结果元数据
-            result.is_web_search = any(doc.metadata.get('type') == 'web' for doc in documents)
-            local_count = sum(1 for doc in documents if doc.metadata.get('type') == 'local')
-            web_count = sum(1 for doc in documents if doc.metadata.get('type') == 'web')
-            
-            logger.info(f"检索完成: 共找到 {len(documents)} 条证据 (本地: {local_count}, 联网: {web_count})")
-            
-            # 转换为兼容格式 List[Dict] 以供后续分析使用
-            evidences = []
-            for doc in documents:
-                evidences.append({
-                    "content": doc.page_content,
-                    "text": doc.page_content, # 兼容 evidence_analyzer
-                    "metadata": {
-                        "source": doc.metadata.get('source', '未知'),
-                        "type": doc.metadata.get('type', 'local'),
-                        "similarity": doc.metadata.get('similarity', 0.0),
-                        "score": doc.metadata.get('score', 0.0)
-                    },
-                    "source": doc.metadata.get('source', '未知') # 兼容旧版
-                })
-            
-            result.retrieved_evidence = evidences
-            
-            if result.is_web_search:
-                result.add_metadata(PipelineStage.WEB_SEARCH, True, duration=(datetime.now() - retrieval_start).total_seconds() * 1000)
-            else:
-                result.add_metadata(PipelineStage.RETRIEVAL, True, duration=(datetime.now() - retrieval_start).total_seconds() * 1000)
+        # 阶段2: 证据检索（使用增强的协调器）
+        logger.info("阶段2: 证据检索")
+        retrieval_start = datetime.now()
 
-            # 4. 如果最终还是没证据，走兜底
-            if not evidences:
-                fallback_start = datetime.now()
-                try:
-                    logger.warning("未找到任何外部证据，启动 LLM 知识库兜底...")
-                    full_claim = f"{result.entity} {result.claim}"
-                    fallback_verdict = summarize_with_fallback(full_claim)
-                    
-                    if fallback_verdict:
-                        logger.info(f"兜底核查完成: 结论={fallback_verdict.verdict.value}")
-                        result.is_fallback = True
-                        result.final_verdict = fallback_verdict.verdict.value
-                        result.confidence_score = fallback_verdict.confidence
-                        result.risk_level = fallback_verdict.risk_level
-                        result.summary_report = fallback_verdict.summary
-                        
-                        self.cache_manager.set_verdict(query, fallback_verdict)
-                        result.saved_to_cache = True
-                        result.add_metadata(PipelineStage.VERDICT, True, "兜底分析成功", duration=(datetime.now() - fallback_start).total_seconds() * 1000)
-                    else:
-                        logger.error("兜底核查失败：LLM 未返回结果")
-                        result.final_verdict = "证据不足"
-                        result.summary_report = "本地和联网均未找到证据，且 LLM 无法做出确信判断。"
-                        result.add_metadata(PipelineStage.VERDICT, False, "兜底分析失败")
-                except Exception as e:
-                    logger.error(f"兜底核查异常: {e}")
-                    result.final_verdict = "证据不足"
-                    result.summary_report = f"处理过程出错: {e}"
-                    result.add_metadata(PipelineStage.VERDICT, False, f"兜底异常: {e}")
+        # [v0.5.1] 使用带解析词的检索
+        if parsed:
+            evidence_list = self._retrieval_coordinator.retrieve_with_parsed_query(
+                query=query,
+                parsed_info=parsed,
+                local_docs=local_docs
+            )
+        else:
+            # 回退到简单检索
+            evidence_list = self._retrieval_coordinator.retrieve(query=query)
 
-                return result
-        except Exception as e:
-            logger.error(f"检索阶段出错: {e}")
-            result.add_metadata(PipelineStage.RETRIEVAL, False, str(e))
-            return result
+        # 获取检索统计
+        stats = self._retrieval_coordinator.get_retrieval_stats(evidence_list)
+        result.retrieved_evidence = evidence_list
+        result.is_web_search = stats['is_web_search']
 
-        # 5. 多角度分析
-        analysis_start = datetime.now()
-        logger.info(f"开始对 {len(evidences)} 条证据进行多角度分析...")
-        try:
-            full_claim = f"{result.entity} {result.claim}"
-            assessments = analyze_evidence(full_claim, evidences)
+        if result.is_web_search:
+            result.add_metadata(
+                PipelineStage.WEB_SEARCH,
+                True,
+                duration=(datetime.now() - retrieval_start).total_seconds() * 1000
+            )
+        else:
+            result.add_metadata(
+                PipelineStage.RETRIEVAL,
+                True,
+                duration=(datetime.now() - retrieval_start).total_seconds() * 1000
+            )
+
+        logger.info(f"检索完成: {stats}")
+
+        # 阶段3: 证据分析
+        logger.info("阶段3: 证据分析")
+        if evidence_list:
+            claim = result.claim if result.claim else query
+            assessments = self._analysis_coordinator.analyze(
+                claim=claim,
+                evidence_list=evidence_list
+            )
             result.evidence_assessments = assessments
-            
-            if not assessments:
-                logger.error("多角度分析未返回任何评估结果")
-                result.add_metadata(PipelineStage.ANALYSIS, False, "分析未返回结果")
-                return result
-                
-            logger.info("证据分析完成。")
-            result.add_metadata(PipelineStage.ANALYSIS, True, duration=(datetime.now() - analysis_start).total_seconds() * 1000)
-        except Exception as e:
-            logger.error(f"证据分析阶段出错: {e}")
-            result.add_metadata(PipelineStage.ANALYSIS, False, str(e))
-            return result
 
-        # 6. 真相总结
+            result.add_metadata(PipelineStage.ANALYSIS, True)
+        else:
+            logger.warning("无证据，跳过分析")
+            result.add_metadata(PipelineStage.ANALYSIS, True, "无证据")
+
+        # 阶段4: 生成裁决
+        logger.info("阶段4: 生成裁决")
         verdict_start = datetime.now()
-        logger.info("正在生成最终核查报告...")
-        try:
-            verdict: FinalVerdict = summarize_truth(full_claim, assessments)
-            if verdict:
-                result.final_verdict = verdict.verdict.value
-                result.confidence_score = verdict.confidence
-                result.risk_level = verdict.risk_level
-                result.summary_report = verdict.summary
-                logger.info(f"核查总结完成: 结论='{result.final_verdict}', 置信度={result.confidence_score}")
-                
-                # 写入缓存
-                self.cache_manager.set_verdict(query, verdict)
-                result.saved_to_cache = True
-                
-                result.add_metadata(PipelineStage.VERDICT, True, duration=(datetime.now() - verdict_start).total_seconds() * 1000)
-                
-                # 尝试自动知识集成
-                self._auto_integrate_knowledge(result)
-            else:
-                 logger.error("真相总结生成失败：返回结果为空")
-                 result.add_metadata(PipelineStage.VERDICT, False, "总结生成失败")
-        except Exception as e:
-            logger.error(f"真相总结阶段出错: {e}")
-            result.add_metadata(PipelineStage.VERDICT, False, str(e))
 
-        logger.info(f"整个核查流程结束，耗时: {(datetime.now() - start_time).total_seconds():.2f}s")
+        if evidence_list:
+            # 有证据，正常生成裁决
+            verdict = self._verdict_generator.generate(
+                query=query,
+                entity=result.entity,
+                claim=result.claim,
+                evidence_list=evidence_list,
+                assessments=result.evidence_assessments
+            )
+        else:
+            # 无证据，使用兜底机制
+            logger.warning("无证据，使用兜底机制")
+            from src.analyzers.truth_summarizer import summarize_with_fallback
+            full_claim = f"{result.entity} {result.claim}" if result.entity else query
+            verdict = summarize_with_fallback(full_claim)
+            if verdict:
+                result.is_fallback = True
+
+        if verdict:
+            result.final_verdict = verdict.verdict.value
+            result.confidence_score = verdict.confidence
+            result.risk_level = verdict.risk_level
+            result.summary_report = verdict.summary
+
+            # 缓存结果
+            try:
+                self.cache_manager.set_verdict(query, verdict, ttl=self.cache_manager.default_ttl)
+                result.saved_to_cache = True
+            except Exception as e:
+                logger.error(f"缓存保存失败: {e}")
+
+            result.add_metadata(
+                PipelineStage.VERDICT,
+                True,
+                duration=(datetime.now() - verdict_start).total_seconds() * 1000
+            )
+
+            # 尝试自动知识集成
+            self._auto_integrate_knowledge(result)
+        else:
+            logger.error("真相总结生成失败：返回结果为空")
+            result.add_metadata(PipelineStage.VERDICT, False, "总结生成失败")
+
         return result
+

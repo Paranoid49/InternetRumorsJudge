@@ -1,0 +1,3 @@
+{"timestamp": "2026-02-07T16:46:57.849103", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500, "cost": 0.0014}
+{"timestamp": "2026-02-07T16:46:57.849103", "provider": "dashscope", "model": "text-embedding-v4", "endpoint": "embeddings", "input_tokens": 2000, "output_tokens": 0, "total_tokens": 2000, "cost": 0.0014}
+{"timestamp": "2026-02-07T16:46:57.849103", "provider": "tavily", "model": "search", "endpoint": "search", "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost": 0.005}
