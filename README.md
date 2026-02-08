@@ -213,7 +213,8 @@ internet_rumors_judge/
 ├── storage/                      # 运行时数据
 ├── requirements.txt              # 依赖列表
 ├── requirements.lock             # 锁定的依赖版本
-└── OPTIMIZATION_LOG.md           # 优化日志
+
+[//]: # (└── OPTIMIZATION_LOG.md           # 优化日志)
 ```
 
 ## 🎯 核心功能
@@ -319,7 +320,8 @@ A: 尝试添加更多相关知识到data/rumors/
 - [COORDINATORS.md](docs/COORDINATORS.md) - 协调器模块文档
 - [DEPENDENCY_MANAGEMENT.md](docs/DEPENDENCY_MANAGEMENT.md) - 依赖管理文档
 - [TESTING.md](docs/TESTING.md) - 测试文档
-- [OPTIMIZATION_LOG.md](OPTIMIZATION_LOG.md) - 优化日志
+
+[//]: # (- [OPTIMIZATION_LOG.md]&#40;OPTIMIZATION_LOG.md&#41; - 优化日志)
 
 ## 🤝 贡献
 

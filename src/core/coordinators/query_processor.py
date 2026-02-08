@@ -10,6 +10,7 @@ from datetime import datetime
 
 from src.analyzers.query_parser import QueryAnalysis
 from src.core.pipeline import PipelineStage
+from src.core.coordinators.base import BaseCoordinator
 
 # 导入并行度配置（v0.6.0新增）
 try:
@@ -21,7 +22,7 @@ except ImportError:
 logger = logging.getLogger("QueryProcessor")
 
 
-class QueryProcessor:
+class QueryProcessor(BaseCoordinator):
     """
     查询处理器
 
@@ -41,6 +42,7 @@ class QueryProcessor:
             cache_manager: 缓存管理器
             hybrid_retriever: 混合检索器（可选，用于并行检索）
         """
+        super().__init__("QueryProcessor")
         self.parser_chain = parser_chain
         self.cache_manager = cache_manager
         self.hybrid_retriever = hybrid_retriever

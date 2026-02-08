@@ -3,12 +3,14 @@
 
 提供流程编排的各个协调器组件
 """
+from .base import BaseCoordinator
 from .query_processor import QueryProcessor
 from .retrieval_coordinator import RetrievalCoordinator
 from .analysis_coordinator import AnalysisCoordinator
 from .verdict_generator import VerdictGenerator
 
 __all__ = [
+    'BaseCoordinator',
     'QueryProcessor',
     'RetrievalCoordinator',
     'AnalysisCoordinator',

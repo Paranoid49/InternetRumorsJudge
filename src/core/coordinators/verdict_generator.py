@@ -7,11 +7,12 @@ import logging
 from typing import List, Dict, Any, Optional
 
 from src.analyzers.truth_summarizer import summarize_truth, summarize_with_fallback, FinalVerdict
+from src.core.coordinators.base import BaseCoordinator
 
 logger = logging.getLogger("VerdictGenerator")
 
 
-class VerdictGenerator:
+class VerdictGenerator(BaseCoordinator):
     """
     裁决生成器
 
@@ -23,7 +24,7 @@ class VerdictGenerator:
 
     def __init__(self):
         """初始化裁决生成器"""
-        pass
+        super().__init__("VerdictGenerator")
 
     def generate(
         self,

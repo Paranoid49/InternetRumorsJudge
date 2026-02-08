@@ -13,11 +13,10 @@ from src import config
 from src.utils.llm_factory import create_dashscope_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 
-# 导入版本管理器（可选）
-try:
+# 延迟导入版本管理器（避免循环导入）
+def _get_version_manager():
     from src.core.version_manager import VersionManager
-except ImportError:
-    VersionManager = None
+    return VersionManager
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -166,23 +165,22 @@ class KnowledgeIntegrator:
         Rebuild the vector knowledge base using double-buffering strategy.
 
         新版本在后台构建，不会阻塞并发查询。构建完成后原子性切换。
+        使用强制全量重建，确保新知识立即生效。
         """
         print("🔄 Rebuilding Knowledge Base (using double-buffering strategy)...")
-        logger.info("开始异步重构知识库（双缓冲策略）")
+        logger.info("开始重构知识库（双缓冲策略，线程安全）")
 
         try:
             kb = EvidenceKnowledgeBase()
 
-            # 使用版本管理的双缓冲构建
-            if kb._version_manager:
-                logger.info("使用版本管理的双缓冲构建，不会阻塞并发查询")
-                kb.build(incremental=False)  # 全量重建新版本
-                print("✅ Knowledge Base rebuilt successfully with versioning!")
-            else:
-                # 回退到传统方式
-                logger.warning("版本管理器未启用，使用传统构建方式（可能阻塞查询）")
-                kb.build(force=True, incremental=False)
-                print("✅ Knowledge Base rebuilt successfully!")
+            # 验证版本管理器可用（强制要求）
+            if not kb._version_manager:
+                raise RuntimeError("❌ 版本管理器未初始化 - 无法保证线程安全")
+
+            # 使用版本管理的双缓冲构建（force=False，仍然使用双缓冲）
+            logger.info("使用版本管理的双缓冲构建，不会阻塞并发查询")
+            kb.build(force=False, incremental=False)  # 全量重建新版本（双缓冲）
+            print("✅ Knowledge Base rebuilt successfully with versioning!")
 
         except Exception as e:
             logger.error(f"Failed to rebuild Knowledge Base: {e}", exc_info=True)

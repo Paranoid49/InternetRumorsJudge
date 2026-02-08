@@ -15,12 +15,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.analyzers.truth_summarizer import FinalVerdict
 from src import config
 
-# 导入版本管理器（可选）
-try:
+# 导入版本管理器（强制要求，确保缓存一致性）
+# 使用延迟导入避免循环依赖
+def _get_version_manager_classes():
     from src.core.version_manager import VersionManager, KnowledgeVersion
-except ImportError:
-    VersionManager = None
-    KnowledgeVersion = None
+    return VersionManager, KnowledgeVersion
 
 logger = logging.getLogger("CacheManager")
 
@@ -59,15 +58,21 @@ class CacheManager:
         # 从 config 读取语义匹配阈值
         self.semantic_threshold = getattr(config, 'SEMANTIC_CACHE_THRESHOLD', 0.96)
 
-        # 初始化版本管理器（支持缓存失效）
+        # 初始化版本管理器（强制要求，确保缓存一致性）
         self._version_manager = None
         self._current_kb_version = None
         self._version_lock = threading.Lock()  # 版本检查锁
-        if VersionManager is not None:
-            storage_base = project_root / "storage"
-            self._version_manager = VersionManager(base_dir=storage_base)
-            self._current_kb_version = self._version_manager.get_current_version()
-            logger.info(f"缓存管理器已启用版本感知: {self._current_kb_version.version_id if self._current_kb_version else 'None'}")
+
+        # 延迟导入并强制启用版本管理器
+        VersionManager, _ = _get_version_manager_classes()
+        storage_base = project_root / "storage"
+        self._version_manager = VersionManager(base_dir=storage_base)
+        self._current_kb_version = self._version_manager.get_current_version()
+
+        if self._current_kb_version:
+            logger.info(f"缓存管理器已启用版本感知: {self._current_kb_version.version_id}")
+        else:
+            logger.info("缓存管理器已启用版本感知: 首次构建，暂无版本信息")
 
     @property
     def vector_cache(self) -> Chroma:
@@ -153,44 +158,63 @@ class CacheManager:
             return None
 
     def _is_version_changed(self) -> bool:
-        """检查知识库版本是否变化（线程安全）"""
-        if not self._version_manager:
-            return False
+        """
+        检查知识库版本是否变化（线程安全）
 
+        边界情况处理：
+        - 首次构建：None -> 有版本，视为变化（需要清空旧缓存）
+        - 版本更新：旧版本 -> 新版本，视为变化
+        - 无版本文件：视为无变化（使用 TTL 机制）
+        """
         with self._version_lock:
             current_version = self._version_manager.get_current_version()
 
+            # 获取版本ID用于比较
+            old_version_id = self._current_kb_version.version_id if self._current_kb_version else None
+            new_version_id = current_version.version_id if current_version else None
+
             # 版本变化检测
-            if self._current_kb_version != current_version:
-                if current_version:
-                    logger.info(f"知识库版本变化: {self._current_kb_version.version_id if self._current_kb_version else 'None'} -> {current_version.version_id}")
+            if old_version_id != new_version_id:
+                if new_version_id:
+                    logger.info(f"知识库版本变化: {old_version_id or 'None'} -> {new_version_id}")
                 else:
-                    logger.info(f"知识库版本变化: {self._current_kb_version.version_id if self._current_kb_version else 'None'} -> None")
+                    logger.info(f"知识库版本变化: {old_version_id or 'None'} -> None")
 
                 # 更新当前版本
                 self._current_kb_version = current_version
+
+                # 首次构建时（None -> 有版本），需要清空旧缓存
+                if old_version_id is None and new_version_id is not None:
+                    logger.info("检测到首次构建后的版本初始化，旧缓存将失效")
+                    return True
+
                 return True
 
             return False
 
     def _is_cache_version_valid(self, cached_data: dict) -> bool:
-        """检查缓存条目的版本是否有效"""
-        if not self._version_manager:
-            return True  # 没有版本管理器，认为缓存有效
+        """
+        检查缓存条目的版本是否有效
 
+        边界情况处理：
+        - 缓存无版本号 + 当前无版本：有效（首次构建前）
+        - 缓存无版本号 + 当前有版本：无效（首次构建后的旧缓存）
+        - 缓存有版本号 + 版本不匹配：无效（版本更新后的旧缓存）
+        - 缓存有版本号 + 版本匹配：有效
+        """
         current_version = self._version_manager.get_current_version()
+        current_version_id = current_version.version_id if current_version else None
 
-        # 缓存中没有版本信息（旧版本缓存），认为无效
+        # 缓存中没有版本信息（旧版本缓存）
         if "kb_version" not in cached_data:
-            if current_version:
-                logger.debug("缓存条目缺少版本信息，认为是旧版本缓存")
+            if current_version_id:
+                logger.debug("缓存条目缺少版本信息，认为是旧版本缓存（首次构建前）")
                 return False
-            return True  # 没有当前版本，认为有效
+            # 首次构建前，无版本号时认为有效
+            return True
 
         # 检查版本是否匹配
         cached_version = cached_data.get("kb_version")
-        current_version_id = current_version.version_id if current_version else None
-
         if cached_version != current_version_id:
             logger.debug(f"缓存版本不匹配: cached={cached_version}, current={current_version_id}")
             return False
@@ -202,6 +226,7 @@ class CacheManager:
         缓存裁决结果并存入语义索引
 
         新增：存储时附带知识库版本信息
+        改进：处理首次构建时无版本的边界情况
         """
         if not verdict:
             return
@@ -210,10 +235,13 @@ class CacheManager:
         data = verdict.model_dump()
         expire = ttl or self.default_ttl
 
-        # 添加知识库版本信息
-        if self._version_manager and self._current_kb_version:
+        # 添加知识库版本信息（如果存在）
+        # 首次构建前可能没有版本信息，这是正常的
+        if self._current_kb_version:
             data["kb_version"] = self._current_kb_version.version_id
             logger.debug(f"缓存已绑定版本: {self._current_kb_version.version_id}")
+        else:
+            logger.debug("当前无知识库版本，缓存未绑定版本信息（首次构建前）")
 
         # 1. 存入精确匹配缓存
         self.cache.set(key, data, expire=expire)
@@ -234,7 +262,7 @@ class CacheManager:
                         "cache_key": key,
                         "timestamp": datetime.now().isoformat()
                     }
-                    # 添加版本信息到语义缓存
+                    # 添加版本信息到语义缓存（如果存在）
                     if self._current_kb_version:
                         metadata["kb_version"] = self._current_kb_version.version_id
 
@@ -254,6 +282,34 @@ class CacheManager:
             if os.path.exists(self.vector_cache_dir):
                 shutil.rmtree(self.vector_cache_dir)
             self._vector_cache = None
+
+    def clear_stale_cache(self):
+        """
+        清理过期缓存（版本不匹配的缓存）
+
+        遍历缓存中的所有条目，删除版本不匹配的条目
+        注意：这个操作可能比较耗时，建议在后台执行
+        """
+        stale_keys = []
+        total_checked = 0
+
+        # 遍历缓存中的所有键
+        for key in self.cache:
+            total_checked += 1
+            data = self.cache.get(key)
+            if data and not self._is_cache_version_valid(data):
+                stale_keys.append(key)
+                logger.debug(f"发现过期缓存: {key}")
+
+        # 删除过期缓存
+        if stale_keys:
+            logger.info(f"清理 {len(stale_keys)} 个过期缓存条目（共检查 {total_checked} 个）")
+            for key in stale_keys:
+                self.cache.delete(key)
+        else:
+            logger.info(f"未发现过期缓存（共检查 {total_checked} 个）")
+
+        return len(stale_keys)
 
     def close(self):
         """关闭缓存连接"""

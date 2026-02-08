@@ -8,11 +8,12 @@ from typing import List, Dict, Any
 
 from src.analyzers.evidence_analyzer import analyze_evidence, EvidenceAssessment
 from src.core.pipeline import PipelineStage
+from src.core.coordinators.base import BaseCoordinator
 
 logger = logging.getLogger("AnalysisCoordinator")
 
 
-class AnalysisCoordinator:
+class AnalysisCoordinator(BaseCoordinator):
     """
     分析协调器
 
@@ -24,7 +25,7 @@ class AnalysisCoordinator:
 
     def __init__(self):
         """初始化分析协调器"""
-        pass
+        super().__init__("AnalysisCoordinator")
 
     def analyze(
         self,

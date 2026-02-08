@@ -25,3 +25,8 @@
 {"timestamp": "2026-02-08T00:07:39.291605", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 1008, "output_tokens": 206, "total_tokens": 1214, "cost": 0.0008152000000000001}
 {"timestamp": "2026-02-08T00:07:40.266900", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 1278, "output_tokens": 254, "total_tokens": 1532, "cost": 0.0010192}
 {"timestamp": "2026-02-08T00:07:40.631834", "provider": "dashscope", "model": "qwen-max", "endpoint": "chat", "input_tokens": 871, "output_tokens": 90, "total_tokens": 961, "cost": 0.02282}
+{"timestamp": "2026-02-08T21:42:10.377821", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 175, "output_tokens": 25, "total_tokens": 200, "cost": 0.00011999999999999999}
+{"timestamp": "2026-02-08T21:42:14.937456", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 1072, "output_tokens": 243, "total_tokens": 1315, "cost": 0.0009148000000000001}
+{"timestamp": "2026-02-08T21:42:15.032103", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 991, "output_tokens": 240, "total_tokens": 1231, "cost": 0.0008764}
+{"timestamp": "2026-02-08T21:42:15.816017", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 963, "output_tokens": 222, "total_tokens": 1185, "cost": 0.0008292}
+{"timestamp": "2026-02-08T21:42:19.760191", "provider": "dashscope", "model": "qwen-max", "endpoint": "chat", "input_tokens": 703, "output_tokens": 85, "total_tokens": 788, "cost": 0.01916}
