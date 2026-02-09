@@ -165,8 +165,13 @@ class CacheManager:
         - 首次构建：None -> 有版本，视为变化（需要清空旧缓存）
         - 版本更新：旧版本 -> 新版本，视为变化
         - 无版本文件：视为无变化（使用 TTL 机制）
+        - 版本管理器不可用：视为无变化（防御性处理）
         """
         with self._version_lock:
+            # 防御性检查：版本管理器不可用时，认为版本未变化
+            if self._version_manager is None:
+                return False
+
             current_version = self._version_manager.get_current_version()
 
             # 获取版本ID用于比较
@@ -201,7 +206,12 @@ class CacheManager:
         - 缓存无版本号 + 当前有版本：无效（首次构建后的旧缓存）
         - 缓存有版本号 + 版本不匹配：无效（版本更新后的旧缓存）
         - 缓存有版本号 + 版本匹配：有效
+        - 版本管理器不可用：认为有效（防御性处理）
         """
+        # 防御性检查：版本管理器不可用时，认为缓存有效
+        if self._version_manager is None:
+            return True
+
         current_version = self._version_manager.get_current_version()
         current_version_id = current_version.version_id if current_version else None
 
