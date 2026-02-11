@@ -1,0 +1,129 @@
+{
+  "project_name": "互联网谣言粉碎机 (Internet Rumors Judge)",
+  "analysis_date": "2026-02-11",
+  "tech_stack": {
+    "language": "Python 3.11+",
+    "framework": "LangChain 0.3+",
+    "llm_provider": "DashScope (通义千问)",
+    "vector_db": "ChromaDB",
+    "web_framework": "FastAPI, Gradio"
+  },
+  "code_structure": {
+    "core_modules": {
+      "src/core/": {
+        "pipeline.py": "核心引擎（单例模式）",
+        "cache_manager.py": "双层缓存管理",
+        "parallelism_config.py": "动态并行度配置",
+        "version_manager.py": "知识库版本管理",
+        "coordinators/": "协调器层（4个协调器）",
+        "thread_utils.py": "线程安全工具",
+        "rate_limiter.py": "API限流",
+        "circuit_breaker.py": "熔断器",
+        "retry_policy.py": "重试策略"
+      },
+      "src/retrievers/": {
+        "evidence_retriever.py": "向量知识库",
+        "hybrid_retriever.py": "混合检索",
+        "web_search_tool.py": "联网搜索"
+      },
+      "src/analyzers/": {
+        "query_parser.py": "查询意图解析",
+        "evidence_analyzer.py": "证据分析",
+        "truth_summarizer.py": "真相总结"
+      },
+      "src/knowledge/": {
+        "knowledge_integrator.py": "知识自动集成"
+      },
+      "src/observability/": {
+        "api_monitor.py": "API使用监控",
+        "api_monitor_callback.py": "监控回调",
+        "logger_config.py": "日志配置",
+        "metrics.py": "指标采集"
+      },
+      "src/utils/": {
+        "llm_factory.py": "LLM工厂",
+        "batch_embedder.py": "批量嵌入",
+        "error_parser.py": "错误解析",
+        "context_compressor.py": "上下文压缩",
+        "feedback_analyzer.py": "反馈分析",
+        "feedback_reviewer.py": "反馈审核"
+      },
+      "src/services/": {
+        "api_service.py": "FastAPI服务",
+        "web_interface.py": "Gradio Web界面"
+      }
+    },
+    "design_patterns": [
+      "Singleton (单例) - RumorJudgeEngine",
+      "Facade (门面) - RumorJudgeEngine",
+      "Coordinator (协调器) - 4个协调器",
+      "Strategy (策略) - 检索策略",
+      "Template Method (模板方法) - 处理流程",
+      "Factory (工厂) - LLMFactory",
+      "Double Buffer (双缓冲) - VersionManager"
+    ],
+    "key_algorithms": [
+      "双层缓存（精确+语义）",
+      "并行处理（ThreadPoolExecutor）",
+      "语义相似度（余弦相似度）",
+      "证据去重（内容哈希）",
+      "知识库版本管理（原子性切换）"
+    ]
+  },
+  "testing": {
+    "framework": "pytest",
+    "coverage": {
+      "pipeline.py": "84%",
+      "cache_manager.py": "90%",
+      "version_manager.py": "82%",
+      "observability": "~85%"
+    },
+    "total_tests": 327,
+    "test_files": [
+      "tests/unit/core/test_pipeline.py (58 tests)",
+      "tests/unit/core/test_cache_manager_enhanced.py (43 tests)",
+      "tests/unit/core/test_version_manager.py (36 tests)",
+      "tests/unit/observability/ (61 tests)",
+      "tests/unit/core/test_exceptions.py (28 tests)"
+    ]
+  },
+  "performance": {
+    "cache_hit_rate": "~40%",
+    "avg_response_time": {
+      "cache_hit": "<5ms",
+      "local_only": "~16s",
+      "with_web_search": "~30s"
+    },
+    "parallelism": {
+      "default_workers": 10,
+      "max_workers": 20,
+      "adaptive": true
+    },
+    "api_calls_per_query": "~15"
+  },
+  "deployment": {
+    "docker_support": true,
+    "docker_compose": true,
+    "env_vars": [
+      "DASHSCOPE_API_KEY",
+      "TAVILY_API_KEY",
+      "MAX_WORKERS",
+      "SEMANTIC_CACHE_THRESHOLD",
+      "API_DAILY_BUDGET"
+    ]
+  },
+  "challenges": {
+    "thread_safety": "已通过 LockManager 和细粒度锁解决",
+    "knowledge_base_rebuild": "已通过双缓冲策略解决",
+    "cache_consistency": "已通过版本感知缓存解决",
+    "code_duplication": "已通过 BaseCoordinator 基类解决",
+    "error_handling": "已通过统一异常体系解决"
+  },
+  "future_work": [
+    "继续提升测试覆盖率",
+    "补充 API 服务测试",
+    "添加集成测试",
+    "性能优化（异步 I/O）",
+    "分布式部署支持"
+  ]
+}
