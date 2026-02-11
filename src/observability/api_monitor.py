@@ -158,7 +158,10 @@ class APIMonitor:
             stats_file = self._data_dir / 'daily_stats.json'
             if stats_file.exists():
                 with open(stats_file, 'r', encoding='utf-8') as f:
-                    self._daily_stats = json.load(f)
+                    loaded_stats = json.load(f)
+                    # 更新到 defaultdict 中，保持 defaultdict 的特性
+                    for date_key, value in loaded_stats.items():
+                        self._daily_stats[date_key] = value
 
             logger.info(f"加载历史数据: {len(self._records)} 条记录")
 
@@ -188,50 +191,66 @@ class APIMonitor:
         Returns:
             成本（元）
         """
-        with self._lock:
-            timestamp = datetime.now()
+        try:
+            with self._lock:
+                timestamp = datetime.now()
 
-            # 计算总token数
-            if total_tokens is None:
-                total_tokens = input_tokens + output_tokens
+                # 计算总token数
+                if total_tokens is None:
+                    total_tokens = input_tokens + output_tokens
 
-            # 计算成本
-            cost = self._calculate_cost(provider, model, input_tokens, output_tokens)
+                # 计算成本
+                cost = self._calculate_cost(provider, model, input_tokens, output_tokens)
 
-            # 创建记录
-            record = APIUsageRecord(
-                timestamp=timestamp,
-                provider=provider,
-                model=model,
-                endpoint=endpoint,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=total_tokens,
-                cost=cost
-            )
+                # 创建记录
+                record = APIUsageRecord(
+                    timestamp=timestamp,
+                    provider=provider,
+                    model=model,
+                    endpoint=endpoint,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    cost=cost
+                )
 
-            # 添加记录
-            self._records.append(record)
+                # 添加记录
+                self._records.append(record)
 
-            # 更新统计
-            date_key = timestamp.strftime('%Y-%m-%d')
-            self._daily_stats[date_key]['total_cost'] += cost
-            self._daily_stats[date_key]['total_tokens'] += total_tokens
-            self._daily_stats[date_key]['api_calls'] += 1
+                # 更新统计
+                date_key = timestamp.strftime('%Y-%m-%d')
+                self._daily_stats[date_key]['total_cost'] += cost
+                self._daily_stats[date_key]['total_tokens'] += total_tokens
+                self._daily_stats[date_key]['api_calls'] += 1
 
-            # 检查配额
-            self._check_quota(date_key)
+                # 检查配额（可能抛出异常）
+                try:
+                    self._check_quota(date_key)
+                except Exception as e:
+                    logger.error(f"检查配额时出错 (date={date_key}): {e}")
 
-            # 持久化
-            self._persist_record(record)
-            self._persist_stats()
+                # 持久化（可能抛出异常）
+                try:
+                    self._persist_record(record)
+                except Exception as e:
+                    logger.error(f"持久化记录时出错: {e}")
 
-            logger.debug(
-                f"API调用记录: {provider}/{model} - "
-                f"tokens={total_tokens}, cost={cost:.6f}元"
-            )
+                try:
+                    self._persist_stats()
+                except Exception as e:
+                    logger.error(f"持久化统计时出错: {e}")
 
-            return cost
+                logger.debug(
+                    f"API调用记录: {provider}/{model} - "
+                    f"tokens={total_tokens}, cost={cost:.6f}元"
+                )
+
+                return cost
+
+        except Exception as e:
+            logger.error(f"记录 API 调用时发生错误: {e}, provider={provider}, model={model}")
+            # 即使出错，也尝试返回一个合理的成本值
+            return self._calculate_cost(provider, model, input_tokens, output_tokens)
 
     def _calculate_cost(
         self,
@@ -327,6 +346,17 @@ class APIMonitor:
             level: 告警级别 (info, warning, critical)
             message: 告警消息
         """
+        # 验证告警级别
+        valid_levels = ['info', 'warning', 'critical']
+        if level not in valid_levels:
+            logger.warning(f"无效的告警级别: {level}, 使用 'info' 作为默认值")
+            level = 'info'
+
+        # 验证消息
+        if not isinstance(message, str):
+            logger.warning(f"告警消息不是字符串类型: {type(message)}, 转换为字符串")
+            message = str(message)
+
         alert = {
             'timestamp': datetime.now().isoformat(),
             'level': level,
@@ -336,7 +366,12 @@ class APIMonitor:
         self._alerts.append(alert)
 
         # 记录日志
-        log_func = logger.info if level == 'info' else (logger.warning if level == 'warning' else logger.error)
+        log_func_map = {
+            'info': logger.info,
+            'warning': logger.warning,
+            'critical': logger.error
+        }
+        log_func = log_func_map.get(level, logger.info)
         log_func(f"[API监控告警] {level.upper()}: {message}")
 
     def _persist_record(self, record: APIUsageRecord):
@@ -348,19 +383,34 @@ class APIMonitor:
         """
         try:
             records_file = self._data_dir / 'usage_records.jsonl'
+            record_dict = record.to_dict()
+            # 确保时间戳是字符串格式
+            if 'timestamp' in record_dict and hasattr(record_dict['timestamp'], 'isoformat'):
+                record_dict['timestamp'] = record_dict['timestamp'].isoformat()
+
             with open(records_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(record.to_dict(), ensure_ascii=False) + '\n')
+                f.write(json.dumps(record_dict, ensure_ascii=False) + '\n')
+        except (TypeError, ValueError) as e:
+            logger.error(f"持久化使用记录失败: {e}, 记录类型: {type(record)}")
         except Exception as e:
-            logger.error(f"持久化使用记录失败: {e}")
+            logger.error(f"持久化使用记录时发生未知错误: {e}")
 
     def _persist_stats(self):
         """持久化统计数据"""
         try:
             stats_file = self._data_dir / 'daily_stats.json'
+            # 转换为普通字典，确保所有值都是 JSON 可序列化的
+            stats_to_save = {}
+            for date_key, value in self._daily_stats.items():
+                # 确保 value 是普通字典，不是 defaultdict 或其他特殊类型
+                stats_to_save[date_key] = dict(value) if hasattr(value, 'items') else value
+
             with open(stats_file, 'w', encoding='utf-8') as f:
-                json.dump(dict(self._daily_stats), f, ensure_ascii=False, indent=2)
+                json.dump(stats_to_save, f, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError) as e:
+            logger.error(f"持久化统计数据失败: {e}, 数据类型: {type(self._daily_stats)}")
         except Exception as e:
-            logger.error(f"持久化统计数据失败: {e}")
+            logger.error(f"持久化统计数据时发生未知错误: {e}")
 
     def get_daily_summary(self, date: Optional[datetime] = None) -> Dict:
         """

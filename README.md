@@ -188,6 +188,30 @@ export SEMANTIC_CACHE_THRESHOLD=0.95
 export CACHE_TTL=86400  # 24小时
 ```
 
+## 📖 文档
+
+完整的文档请查看 [docs/INDEX.md](docs/INDEX.md)
+
+### 快速链接
+
+**入门**
+- [快速开始](learn_doc/QUICK_START.md) - 5分钟上手
+- [项目学习指南](learn_doc/PROJECT_LEARNING_GUIDE.md) - 完整学习路径
+
+**架构**
+- [系统架构](docs/ARCHITECTURE.md) - 架构设计详解
+- [模块工作流程](docs/MODULE_WORKFLOWS.md) - 流程图和代码位置
+- [架构图解](learn_doc/ARCHITECTURE_DIAGRAMS.md) - 可视化架构
+
+**开发**
+- [测试指南](docs/TESTING.md) - 测试规范和覆盖率
+- [API 参考](docs/API_REFERENCE.md) - API 接口文档
+- [Claude 开发指南](docs/CLAUDE.md) - Claude Code 工作指南
+
+**部署**
+- [部署指南](deployment/DEPLOY_GUIDE.md) - Docker 部署
+- [部署检查清单](docs/DEPLOYMENT_CHECKLIST.md) - 上线前检查
+
 ## 📁 项目结构
 
 ```
