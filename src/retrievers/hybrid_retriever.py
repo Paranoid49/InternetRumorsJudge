@@ -2,12 +2,19 @@ import logging
 from typing import List, Dict, Optional, Any, Tuple
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
-from difflib import SequenceMatcher
 
-# 设置项目路径（v0.9.0: 使用统一路径工具）
-from src.utils.path_utils import setup_project_path
-setup_project_path()
+# [v0.7.2] 使用 rapidfuzz 替代 SequenceMatcher，性能提升 5-10x
+try:
+    from rapidfuzz import fuzz
+    RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    from difflib import SequenceMatcher
+    RAPIDFUZZ_AVAILABLE = False
+    logging.getLogger("HybridRetriever").warning(
+        "rapidfuzz 未安装，回退到 difflib.SequenceMatcher。建议执行: pip install rapidfuzz"
+    )
 
+# 项目路径由 src/__init__.py 统一设置
 from src.retrievers.evidence_retriever import EvidenceKnowledgeBase
 from src.retrievers.web_search_tool import WebSearchTool
 from src import config
@@ -35,6 +42,7 @@ class HybridRetriever(BaseRetriever):
     web_tool: Any = None
     min_local_similarity: float = config.MIN_LOCAL_SIMILARITY  # 从 config 读取：相似度达到阈值即视为本地有高质量证据，不再触发联网
     max_results: int = config.MAX_RESULTS  # 从 config 读取：检索返回的最大证据数量
+    dedup_threshold: float = getattr(config, 'DEDUP_SIMILARITY_THRESHOLD', 0.85)  # [v0.7.2] 去重阈值可配置
 
     def __init__(self, local_kb: EvidenceKnowledgeBase, web_tool: WebSearchTool, **kwargs):
         # BaseRetriever 是 Pydantic 模型，需要通过 super().__init__ 初始化
@@ -186,10 +194,16 @@ class HybridRetriever(BaseRetriever):
             is_duplicate = False
             for seen_doc in unique:
                 # 检查内容相似度
-                similarity = SequenceMatcher(None, content_clean[:300],
-                                            ' '.join(seen_doc.page_content.split())[:300]).ratio()
+                seen_content = ' '.join(seen_doc.page_content.split())[:300]
+                if RAPIDFUZZ_AVAILABLE:
+                    # [v0.7.2] rapidfuzz 性能更优
+                    similarity = fuzz.ratio(content_clean[:300], seen_content) / 100.0
+                else:
+                    # 回退到 SequenceMatcher
+                    from difflib import SequenceMatcher
+                    similarity = SequenceMatcher(None, content_clean[:300], seen_content).ratio()
 
-                if similarity > 0.85:  # 相似度阈值
+                if similarity > self.dedup_threshold:  # [v0.7.2] 使用配置阈值
                     logger.info(f"发现相似文档，已去重 (相似度: {similarity:.2f})")
                     is_duplicate = True
                     break

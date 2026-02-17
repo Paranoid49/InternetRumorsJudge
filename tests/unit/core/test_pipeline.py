@@ -974,9 +974,9 @@ class TestRumorJudgeEngineRunWithCoordinators:
         # Mock 解析结果为 None
         mock_qp.parse_with_parallel_retrieval.return_value = (None, [])
 
-        # Mock 检索结果
+        # Mock 检索结果 - 使用 retrieve_with_parsed_query（实际调用的方法）
         evidence_list = [{"content": "证据1", "metadata": {"source": "来源1"}}]
-        mock_rc.retrieve.return_value = evidence_list
+        mock_rc.retrieve_with_parsed_query.return_value = evidence_list
         mock_rc.get_retrieval_stats.return_value = {'is_web_search': False, 'total': 1}
 
         # Mock 分析和裁决
@@ -995,8 +995,8 @@ class TestRumorJudgeEngineRunWithCoordinators:
         assert result.final_verdict == "证据不足"
         # 验证没有检查缓存
         mock_qp.check_cache.assert_not_called()
-        # 验证调用了简单检索（没有 parsed）
-        mock_rc.retrieve.assert_called_once()
+        # 验证调用了 retrieve_with_parsed_query（即使 parsed 为 None）
+        mock_rc.retrieve_with_parsed_query.assert_called_once()
 
     def test_run_with_coordinators_web_search(self, engine):
         """测试使用网络搜索的流程"""

@@ -96,16 +96,23 @@ def sample_assessments():
 class TestAnalyze:
     """测试证据分析功能"""
 
-    def test_analyze_success(self, analysis_coordinator, sample_claim, sample_evidence_list, sample_assessments):
-        """测试分析成功"""
-        with patch('src.core.coordinators.analysis_coordinator.analyze_evidence') as mock_analyze:
-            mock_analyze.return_value = sample_assessments
+    def test_analyze_success(self, sample_claim, sample_evidence_list, sample_assessments):
+        """测试分析成功 - 使用依赖注入的 Mock analyzer"""
+        # 创建 Mock analyzer
+        mock_analyzer = Mock()
+        mock_analyzer.analyze.return_value = sample_assessments
 
-            result = analysis_coordinator.analyze(sample_claim, sample_evidence_list)
+        # 使用依赖注入创建协调器
+        coordinator = AnalysisCoordinator(analyzer=mock_analyzer)
 
-            assert isinstance(result, list)
-            assert all(isinstance(a, EvidenceAssessment) for a in result)
-            mock_analyze.assert_called_once()
+        result = coordinator.analyze(sample_claim, sample_evidence_list)
+
+        assert isinstance(result, list)
+        assert all(isinstance(a, EvidenceAssessment) for a in result)
+        mock_analyzer.analyze.assert_called_once_with(
+            claim=sample_claim,
+            evidence_list=sample_evidence_list
+        )
 
     def test_analyze_empty_evidence_list(self, analysis_coordinator, sample_claim):
         """测试空证据列表"""
@@ -113,14 +120,18 @@ class TestAnalyze:
 
         assert result == []
 
-    def test_analyze_exception(self, analysis_coordinator, sample_claim, sample_evidence_list):
-        """测试分析异常处理"""
-        with patch('src.core.coordinators.analysis_coordinator.analyze_evidence') as mock_analyze:
-            mock_analyze.side_effect = Exception("分析失败")
+    def test_analyze_exception(self, sample_claim, sample_evidence_list):
+        """测试分析异常处理 - 使用依赖注入的 Mock analyzer"""
+        # 创建会抛出异常的 Mock analyzer
+        mock_analyzer = Mock()
+        mock_analyzer.analyze.side_effect = Exception("分析失败")
 
-            result = analysis_coordinator.analyze(sample_claim, sample_evidence_list)
+        # 使用依赖注入创建协调器
+        coordinator = AnalysisCoordinator(analyzer=mock_analyzer)
 
-            assert result == []
+        result = coordinator.analyze(sample_claim, sample_evidence_list)
+
+        assert result == []
 
 
 # ============================================

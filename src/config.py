@@ -1,4 +1,18 @@
 # config.py
+"""
+项目配置入口
+
+[v1.3.0] 重构为配置管理器的代理层，保持向后兼容
+
+使用方式：
+    # 旧版方式（仍然支持）
+    from src import config
+    api_key = config.API_KEY
+
+    # 新版方式（推荐）
+    from src.core.config_manager import config
+    api_key = config.API.DASHSCOPE_API_KEY
+"""
 import os
 from dotenv import load_dotenv
 
@@ -6,51 +20,127 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 环境变量配置
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")  # 使用国内镜像加速模型下载
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-# 请在此处替换为你的真实API密钥
-API_KEY = os.environ.get("DASHSCOPE_API_KEY")
-# 或其他你使用的模型API密钥
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+# 导入统一配置管理器
+from src.core.config_manager import config, get_config, validate_config
+
+# ============================================
+# 向后兼容：直接暴露配置属性
+# ============================================
+
+# API 密钥
+API_KEY = config.API.DASHSCOPE_API_KEY
+TAVILY_API_KEY = config.API.TAVILY_API_KEY
 
 # 检索配置
-SIMILARITY_THRESHOLD = 0.25         # 向量检索相似度阈值（用于 evidence_retriever）
-EMBEDDING_MODEL = "text-embedding-v4"
+SIMILARITY_THRESHOLD = config.Retrieval.SIMILARITY_THRESHOLD
+EMBEDDING_MODEL = config.Retrieval.EMBEDDING_MODEL
+MIN_LOCAL_SIMILARITY = config.Retrieval.MIN_LOCAL_SIMILARITY
+MAX_RESULTS = config.Retrieval.MAX_RESULTS
+DEDUP_SIMILARITY_THRESHOLD = config.Retrieval.DEDUP_SIMILARITY_THRESHOLD
 
-# 混合检索配置 (Hybrid Retrieval)
-MIN_LOCAL_SIMILARITY = 0.6          # 本地检索相似度阈值，低于此值触发联网搜索
-MAX_RESULTS = 3                     # 检索返回的最大证据数量
+# 缓存配置
+SEMANTIC_CACHE_THRESHOLD = config.Cache.SEMANTIC_CACHE_THRESHOLD
+DEFAULT_CACHE_TTL = config.Cache.DEFAULT_CACHE_TTL
 
-# 缓存配置 (Cache)
-SEMANTIC_CACHE_THRESHOLD = 0.96     # 语义缓存相似度阈值，高于此值认为命中相同问题
-DEFAULT_CACHE_TTL = 86400           # 默认缓存过期时间（秒），24小时
+# 自动集成配置
+AUTO_INTEGRATE_MIN_CONFIDENCE = config.AutoIntegration.AUTO_INTEGRATE_MIN_CONFIDENCE
+AUTO_INTEGRATE_MIN_EVIDENCE = config.AutoIntegration.AUTO_INTEGRATE_MIN_EVIDENCE
+AUTO_GEN_WEIGHT = config.AutoIntegration.AUTO_GEN_WEIGHT
 
-# 自动集成配置 (Auto-Integration)
-AUTO_INTEGRATE_MIN_CONFIDENCE = 90  # 自动知识集成最小置信度阈值
-AUTO_INTEGRATE_MIN_EVIDENCE = 3     # 自动知识集成最小证据数量
-AUTO_GEN_WEIGHT = 0.9               # AUTO_GEN_* 文档的相似度加权系数
+# 模型配置
+MODEL_PARSER = config.Model.MODEL_PARSER
+MODEL_ANALYZER = config.Model.MODEL_ANALYZER
+MODEL_SUMMARIZER = config.Model.MODEL_SUMMARIZER
 
-# 模型分级配置 (Model Tiering)
-# 使用更快的模型处理中间任务，核心总结使用最强模型
-MODEL_PARSER = "qwen-plus"     # 意图解析：需要逻辑，但不需要极高深度
-MODEL_ANALYZER = "qwen-plus"   # 证据分析：任务量大，追求速度与准确平衡
-MODEL_SUMMARIZER = "qwen-max" # 最终裁决：追求极高准确度与逻辑严密性
+# 自动收集配置
+ENABLE_AUTO_COLLECT = config.AutoIntegration.ENABLE_AUTO_COLLECT
+AUTO_COLLECT_INTERVAL = config.AutoIntegration.AUTO_COLLECT_INTERVAL
 
-# 自动收集配置 (Auto-Collector)
-ENABLE_AUTO_COLLECT = False     # 是否开启自动收集互联网谣言
-AUTO_COLLECT_INTERVAL = 3600 * 24 # 自动收集间隔时间（秒），默认 24 小时
+# 超时配置
+LLM_REQUEST_TIMEOUT = config.Model.LLM_REQUEST_TIMEOUT
+WEB_SEARCH_TIMEOUT = config.Performance.WEB_SEARCH_TIMEOUT
 
-# 超时配置 (Timeout)
-LLM_REQUEST_TIMEOUT = 30       # LLM 请求超时时间（秒），防止请求挂死
-WEB_SEARCH_TIMEOUT = 15        # 联网搜索超时时间（秒）
+# 证据预过滤配置
+ENABLE_EVIDENCE_PREFILTER = config.Prefilter.ENABLE_EVIDENCE_PREFILTER
+PREFILTER_MAX_EVIDENCE = config.Prefilter.PREFILTER_MAX_EVIDENCE
+PREFILTER_MIN_SIMILARITY = config.Prefilter.PREFILTER_MIN_SIMILARITY
+PREFILTER_HIGH_QUALITY_THRESHOLD = config.Prefilter.PREFILTER_HIGH_QUALITY_THRESHOLD
+PREFILTER_MIN_EVIDENCE_COUNT = config.Prefilter.PREFILTER_MIN_EVIDENCE_COUNT
 
-# 证据预过滤配置 (Evidence Prefiltering) - 阶段2新增
-ENABLE_EVIDENCE_PREFILTER = True      # 是否启用证据预过滤（降低API成本）
-PREFILTER_MAX_EVIDENCE = 5            # 预过滤后保留的最大证据数量
-PREFILTER_MIN_SIMILARITY = 0.3        # 证据相似度过滤阈值
+# 性能优化配置
+ENABLE_FAST_MODE = config.Performance.ENABLE_FAST_MODE
+ANALYZER_MAX_TOKENS = config.Performance.ANALYZER_MAX_TOKENS
+PARALLEL_ANALYZE_THRESHOLD = config.Performance.PARALLEL_ANALYZE_THRESHOLD
+BATCH_EMBEDDING_ENABLED = config.Performance.BATCH_EMBEDDING_ENABLED
 
-# 性能优化配置 (Performance Optimization) - 阶段4新增
-ENABLE_FAST_MODE = False             # 是否启用快速模式（降低温度、限制输出）
-ANALYZER_MAX_TOKENS = 1024           # 证据分析最大输出token数
-PARALLEL_ANALYZE_THRESHOLD = 2     # 触发并行分析的最小证据数量
-BATCH_EMBEDDING_ENABLED = True      # 是否启用批量Embedding
+
+# ============================================
+# 便捷函数
+# ============================================
+
+def get_config_value(key: str, default=None):
+    """
+    获取配置值（支持点号分隔的路径）
+
+    Args:
+        key: 配置键，如 "API.DASHSCOPE_API_KEY"
+        default: 默认值
+
+    Returns:
+        配置值
+    """
+    return config.get(key, default)
+
+
+def validate_configuration():
+    """验证配置，返回错误列表"""
+    return config.validate()
+
+
+def export_config(include_secrets: bool = False):
+    """导出配置（用于调试）"""
+    return config.to_dict(include_secrets)
+
+
+# 导出
+__all__ = [
+    # 配置管理器
+    'config',
+    'get_config',
+    'validate_config',
+    # 旧版属性
+    'API_KEY',
+    'TAVILY_API_KEY',
+    'SIMILARITY_THRESHOLD',
+    'EMBEDDING_MODEL',
+    'MIN_LOCAL_SIMILARITY',
+    'MAX_RESULTS',
+    'DEDUP_SIMILARITY_THRESHOLD',
+    'SEMANTIC_CACHE_THRESHOLD',
+    'DEFAULT_CACHE_TTL',
+    'AUTO_INTEGRATE_MIN_CONFIDENCE',
+    'AUTO_INTEGRATE_MIN_EVIDENCE',
+    'AUTO_GEN_WEIGHT',
+    'MODEL_PARSER',
+    'MODEL_ANALYZER',
+    'MODEL_SUMMARIZER',
+    'ENABLE_AUTO_COLLECT',
+    'AUTO_COLLECT_INTERVAL',
+    'LLM_REQUEST_TIMEOUT',
+    'WEB_SEARCH_TIMEOUT',
+    'ENABLE_EVIDENCE_PREFILTER',
+    'PREFILTER_MAX_EVIDENCE',
+    'PREFILTER_MIN_SIMILARITY',
+    'PREFILTER_HIGH_QUALITY_THRESHOLD',
+    'PREFILTER_MIN_EVIDENCE_COUNT',
+    'ENABLE_FAST_MODE',
+    'ANALYZER_MAX_TOKENS',
+    'PARALLEL_ANALYZE_THRESHOLD',
+    'BATCH_EMBEDDING_ENABLED',
+    # 便捷函数
+    'get_config_value',
+    'validate_configuration',
+    'export_config',
+]

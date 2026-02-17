@@ -3,6 +3,7 @@ import time
 import json
 import asyncio
 import sys
+import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
@@ -20,19 +21,23 @@ try:
 except ImportError:
     pass
 
+# [v1.2.0] 统一日志配置
+from src.observability.logger_config import configure_logging, get_logger
+configure_logging()  # 使用环境变量配置
+
 from src.core.pipeline import RumorJudgeEngine, UnifiedVerificationResult
 from src import config
 
-import logging
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("uvicorn.error")
+logger = get_logger("APIService")
+
+# [v1.1.0] 特性开关：是否使用异步引擎
+USE_ASYNC_ENGINE = os.getenv("USE_ASYNC_ENGINE", "false").lower() == "true"
 
 # 初始化 FastAPI 应用
 app = FastAPI(
     title="谣言粉碎机 API 服务",
     description="基于 RumorJudgeEngine 的谣言核查 API 接口，提供高性能、自动化的谣言鉴别服务。",
-    version="1.1.0"
+    version="1.2.0"
 )
 
 # 配置跨域资源共享 (CORS)
@@ -46,7 +51,17 @@ app.add_middleware(
 )
 
 # 初始化核心引擎 (单例模式)
-engine = RumorJudgeEngine()
+# [v1.1.0] 支持异步引擎切换
+if USE_ASYNC_ENGINE:
+    try:
+        from src.core.async_pipeline import AsyncRumorJudgeEngine
+        engine = AsyncRumorJudgeEngine()
+        logger.info("✅ 使用异步引擎 (AsyncRumorJudgeEngine)")
+    except ImportError as e:
+        logger.warning(f"异步引擎导入失败，回退到同步引擎: {e}")
+        engine = RumorJudgeEngine()
+else:
+    engine = RumorJudgeEngine()
 
 # 启动后台自动收集任务 (如果开启)
 if getattr(config, "ENABLE_AUTO_COLLECT", False):
@@ -61,7 +76,18 @@ if getattr(config, "ENABLE_AUTO_COLLECT", False):
 executor = ThreadPoolExecutor(max_workers=10)
 
 async def run_engine_async(query: str, use_cache: bool):
-    """在线程池中异步运行引擎核查"""
+    """
+    异步运行引擎核查
+
+    [v1.1.0] 支持：
+    - 异步引擎：直接 await engine.run_async()
+    - 同步引擎：通过线程池执行
+    """
+    # 如果使用异步引擎
+    if USE_ASYNC_ENGINE and hasattr(engine, 'run_async'):
+        return await engine.run_async(query, use_cache)
+
+    # 同步引擎通过线程池执行
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, engine.run, query, use_cache)
 
@@ -388,6 +414,113 @@ async def batch_verify(request: BatchVerifyRequest):
         "successful": success_count,
         "results": results
     }
+
+# --- 监控端点 (v1.1.0 新增) ---
+
+@app.get("/monitor/stats", tags=["Monitoring"])
+async def get_monitoring_stats():
+    """
+    获取 API 监控统计数据
+
+    返回今日和本月的 API 使用统计。
+    """
+    try:
+        from src.observability.api_monitor import get_api_monitor
+        monitor = get_api_monitor()
+
+        daily = monitor.get_daily_summary()
+        monthly = monitor.get_monthly_summary()
+        alerts = monitor.get_recent_alerts(10)
+
+        return {
+            "success": True,
+            "daily": daily,
+            "monthly": monthly,
+            "recent_alerts": alerts
+        }
+    except Exception as e:
+        logger.error(f"获取监控统计失败: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get("/monitor/report", tags=["Monitoring"])
+async def get_monitoring_report(days: int = Query(default=7, ge=1, le=30)):
+    """
+    生成 API 监控报告
+
+    Args:
+        days: 报告天数（1-30天）
+
+    Returns:
+        文本格式的监控报告
+    """
+    try:
+        from src.observability.api_monitor import get_api_monitor
+        monitor = get_api_monitor()
+        report = monitor.generate_report(days=days)
+
+        return {
+            "success": True,
+            "days": days,
+            "report": report
+        }
+    except Exception as e:
+        logger.error(f"生成监控报告失败: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get("/monitor/health", tags=["Monitoring"])
+async def get_monitoring_health():
+    """
+    获取 API 健康状态
+
+    返回系统各组件的健康状态和最近的告警。
+    """
+    try:
+        from src.observability.api_monitor import get_api_monitor
+        monitor = get_api_monitor()
+
+        # 获取今日统计
+        daily = monitor.get_daily_summary()
+
+        # 计算健康状态
+        health_status = "healthy"
+        warnings = []
+
+        # 检查是否有超支告警
+        alerts = monitor.get_recent_alerts(5)
+        critical_alerts = [a for a in alerts if a.get('level') == 'critical']
+
+        if critical_alerts:
+            health_status = "warning"
+            warnings.extend([a['message'] for a in critical_alerts])
+
+        return {
+            "success": True,
+            "status": health_status,
+            "timestamp": time.time(),
+            "daily_usage": {
+                "cost": daily.get('total_cost', 0),
+                "tokens": daily.get('total_tokens', 0),
+                "calls": daily.get('api_calls', 0)
+            },
+            "warnings": warnings,
+            "recent_alerts": alerts
+        }
+    except Exception as e:
+        logger.error(f"获取健康状态失败: {e}")
+        return {
+            "success": False,
+            "status": "error",
+            "error": str(e)
+        }
+
 
 if __name__ == "__main__":
     # 生产环境建议使用: uvicorn api_service:app --host 0.0.0.0 --port 8000 --workers 4

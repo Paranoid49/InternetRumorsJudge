@@ -30,12 +30,7 @@ def _ensure_version_manager():
         VersionManager = _VM
     return VersionManager
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+# [v0.7.1] 日志配置统一化 - 移除重复的 basicConfig 调用
 logger = logging.getLogger("EvidenceRetriever")
 
 # 获取项目根目录（从 src/retrievers/ 向上三级）

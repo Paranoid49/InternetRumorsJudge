@@ -184,24 +184,14 @@ class TestRequestContext:
 class TestLogWithContext:
     """测试带上下文的日志"""
 
-    def test_log_with_context_without_structlog(self):
-        """测试没有 structlog 时的上下文日志"""
-        with patch('src.observability.logger_config.STRUCTLOG_AVAILABLE', False):
-            logger = get_logger("test")
-            bound_logger = log_with_context(logger, user_id="123", action="test")
-
-            # 应该返回原始 logger
-            assert bound_logger is logger
-
-    @pytest.mark.skipif(not STRUCTLOG_AVAILABLE, reason="structlog not available")
-    def test_log_with_context_with_structlog(self):
-        """测试有 structlog 时的上下文日志"""
-        configure_logging(json_output=False)
+    def test_log_with_context_standard_logging(self):
+        """测试标准 logging 的上下文日志（v1.3.0: get_logger 始终返回标准 logger）"""
+        configure_logging(json_output=False, force=True)
         logger = get_logger("test")
 
-        # 绑定上下文
+        # 标准 logging 不支持 bind，log_with_context 返回原 logger
         bound_logger = log_with_context(logger, user_id="123", action="test")
-        assert bound_logger is not None
+        assert bound_logger is logger
 
 
 class TestTimer:

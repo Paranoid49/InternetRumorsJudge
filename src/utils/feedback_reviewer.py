@@ -5,9 +5,15 @@ from datetime import datetime
 import glob
 import os
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(message)s') # Simplified format for CLI interaction
-logger = logging.getLogger("FeedbackReviewer")
+# [v1.2.0] 统一日志配置
+try:
+    from src.observability.logger_config import configure_logging, get_logger
+    configure_logging()
+    logger = get_logger("FeedbackReviewer")
+except ImportError:
+    # 回退到标准 logging（独立运行时）
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logger = logging.getLogger("FeedbackReviewer")
 
 class FeedbackReviewer:
     def __init__(self, data_dir: str = "optimization_data", output_dir: str = "reviewed_data"):

@@ -3,9 +3,10 @@ import logging
 import os
 import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 from diskcache import Cache
 from langchain_chroma import Chroma
 
@@ -23,6 +24,62 @@ def _get_version_manager_classes():
 
 logger = logging.getLogger("CacheManager")
 
+
+class LRUCache:
+    """
+    [v1.1.0] 线程安全的 LRU 缓存
+
+    用于热点查询的快速访问层。
+    """
+
+    def __init__(self, capacity: int = 500):
+        self.capacity = capacity
+        self.cache: OrderedDict = OrderedDict()
+        self.lock = threading.RLock()
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key: str) -> Optional[Any]:
+        with self.lock:
+            if key in self.cache:
+                # 移动到末尾（最近使用）
+                self.cache.move_to_end(key)
+                self.hits += 1
+                return self.cache[key]
+            self.misses += 1
+            return None
+
+    def set(self, key: str, value: Any):
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+            else:
+                if len(self.cache) >= self.capacity:
+                    self.cache.popitem(last=False)
+            self.cache[key] = value
+
+    def delete(self, key: str):
+        with self.lock:
+            if key in self.cache:
+                del self.cache[key]
+
+    def clear(self):
+        with self.lock:
+            self.cache.clear()
+            self.hits = 0
+            self.misses = 0
+
+    def get_stats(self) -> Dict:
+        with self.lock:
+            total = self.hits + self.misses
+            return {
+                'size': len(self.cache),
+                'capacity': self.capacity,
+                'hits': self.hits,
+                'misses': self.misses,
+                'hit_rate': self.hits / total if total > 0 else 0
+            }
+
 class CacheManager:
     """
     缓存管理器（线程安全）
@@ -35,6 +92,11 @@ class CacheManager:
     [v0.3.0 升级] 线程安全改进：
     - vector_cache延迟初始化使用锁保护
     - 版本检查使用锁保护
+
+    [v1.1.0] 增强版：
+    - 添加 LRU 热点缓存层
+    - 查询频率统计
+    - 缓存预热支持
     """
 
     def __init__(self, cache_dir: str = None, vector_cache_dir: str = None, embeddings: Any = None):
@@ -57,6 +119,14 @@ class CacheManager:
 
         # 从 config 读取语义匹配阈值
         self.semantic_threshold = getattr(config, 'SEMANTIC_CACHE_THRESHOLD', 0.96)
+
+        # [v1.1.0] 热点 LRU 缓存层
+        self._hot_cache = LRUCache(capacity=500)
+
+        # [v1.1.0] 查询频率统计
+        self._query_frequency: Dict[str, int] = {}
+        self._frequency_lock = threading.RLock()
+        self._hot_threshold = 3  # 查询次数 >= 3 视为热点
 
         # 初始化版本管理器（强制要求，确保缓存一致性）
         self._version_manager = None
@@ -103,29 +173,55 @@ class CacheManager:
         """
         尝试获取缓存的裁决结果（支持精确匹配和语义匹配）
 
+        [v1.1.0] 新增热点缓存层：
+        查询顺序：
+        1. 精确匹配缓存
+        2. 热点 LRU 缓存
+        3. 语义向量缓存
+
         新增：检查知识库版本一致性，如果版本不匹配则缓存失效
         """
+        # 记录查询频率
+        self._record_query_frequency(query)
+
         # 检查知识库版本是否变化
         if self._is_version_changed():
             logger.info("知识库版本已变化，缓存已失效")
-            # 版本变化时不返回缓存，触发重新查询
+            # 版本变化时重置热点缓存
+            self._hot_cache.clear()
             return None
 
-        # 1. 首先尝试精确匹配（极速）
         key = self._generate_key(query)
+
+        # 1. 首先尝试精确匹配（极速）
         data = self.cache.get(key)
 
         if data:
             # 再次检查缓存条目的版本（防御性检查）
             if self._is_cache_version_valid(data):
                 logger.info(f"精确命中缓存: '{query}'")
+                # 同步到热点缓存
+                self._hot_cache.set(key, data)
                 return self._to_verdict(data)
             else:
                 logger.info(f"缓存版本过期，失效: '{query}'")
                 # 删除过期缓存
                 self.cache.delete(key)
+                self._hot_cache.delete(key)
 
-        # 2. 尝试语义匹配（如果配置了 embeddings）
+        # 2. [v1.1.0] 尝试热点 LRU 缓存
+        hot_cached = self._hot_cache.get(key)
+        if hot_cached:
+            if self._is_cache_version_valid(hot_cached):
+                logger.info(f"热点缓存命中: '{query}'")
+                # 同步到精确缓存
+                self.cache.set(key, hot_cached, expire=self.default_ttl)
+                return self._to_verdict(hot_cached)
+            else:
+                # 热点缓存版本过期，删除
+                self._hot_cache.delete(key)
+
+        # 3. 尝试语义匹配（如果配置了 embeddings）
         if self.vector_cache:
             try:
                 # 检索最相似的已缓存查询
@@ -140,7 +236,9 @@ class CacheManager:
 
                         semantic_data = self.cache.get(semantic_key)
                         if semantic_data and self._is_cache_version_valid(semantic_data):
-                            # 为了加速下次匹配，将当前查询也存入精确缓存
+                            # 更新热点缓存
+                            self._hot_cache.set(key, semantic_data)
+                            # 更新精确缓存
                             self.cache.set(key, semantic_data, expire=self.default_ttl)
                             return self._to_verdict(semantic_data)
                         else:
@@ -149,6 +247,18 @@ class CacheManager:
                 logger.error(f"语义缓存检索出错: {e}")
 
         return None
+
+    def _record_query_frequency(self, query: str):
+        """[v1.1.0] 记录查询频率"""
+        key = self._generate_key(query)
+        with self._frequency_lock:
+            self._query_frequency[key] = self._query_frequency.get(key, 0) + 1
+
+    def _is_hot_query(self, query: str) -> bool:
+        """[v1.1.0] 判断是否为热点查询"""
+        key = self._generate_key(query)
+        with self._frequency_lock:
+            return self._query_frequency.get(key, 0) >= self._hot_threshold
 
     def _to_verdict(self, data: dict) -> Optional[FinalVerdict]:
         try:
@@ -235,6 +345,10 @@ class CacheManager:
         """
         缓存裁决结果并存入语义索引
 
+        [v1.1.0] 新增：
+        - 热点查询存入热点缓存
+        - 记录查询频率
+
         新增：存储时附带知识库版本信息
         改进：处理首次构建时无版本的边界情况
         """
@@ -256,7 +370,12 @@ class CacheManager:
         # 1. 存入精确匹配缓存
         self.cache.set(key, data, expire=expire)
 
-        # 2. 存入语义向量库（如果配置了 embeddings 且不存在高度相似的记录）
+        # 2. [v1.1.0] 如果是热点查询，存入热点缓存
+        if self._is_hot_query(query):
+            self._hot_cache.set(key, data)
+            logger.debug(f"热点查询已缓存: '{query[:30]}...'")
+
+        # 3. 存入语义向量库（如果配置了 embeddings 且不存在高度相似的记录）
         if self.vector_cache:
             try:
                 # 检查是否已经有极其相似的查询已在向量库中，避免重复添加
@@ -283,9 +402,56 @@ class CacheManager:
             except Exception as e:
                 logger.error(f"语义缓存存入失败: {e}")
 
+    def warm_up(self, queries: list):
+        """
+        [v1.1.0] 缓存预热
+
+        预先加载已知的热点查询结果到热点缓存。
+
+        Args:
+            queries: 查询列表
+        """
+        logger.info(f"开始缓存预热: {len(queries)} 条查询")
+
+        loaded = 0
+        for query in queries:
+            try:
+                key = self._generate_key(query)
+                data = self.cache.get(key)
+                if data and self._is_cache_version_valid(data):
+                    self._hot_cache.set(key, data)
+                    loaded += 1
+            except Exception as e:
+                logger.warning(f"预热失败: {query[:30]}... - {e}")
+
+        logger.info(f"缓存预热完成: 加载 {loaded}/{len(queries)} 条到热点缓存")
+
+    def get_cache_stats(self) -> Dict:
+        """
+        [v1.1.0] 获取缓存统计
+
+        Returns:
+            缓存统计信息
+        """
+        hot_stats = self._hot_cache.get_stats()
+
+        with self._frequency_lock:
+            total_queries = sum(self._query_frequency.values())
+            hot_queries = sum(1 for freq in self._query_frequency.values() if freq >= self._hot_threshold)
+
+        return {
+            'hot_cache': hot_stats,
+            'query_frequency': {
+                'total_queries': total_queries,
+                'unique_queries': len(self._query_frequency),
+                'hot_queries': hot_queries
+            }
+        }
+
     def clear(self):
         """清空缓存"""
         self.cache.clear()
+        self._hot_cache.clear()
         if self._vector_cache:
             # Chroma 无法直接 clear，通常通过删除目录或 collection 处理
             import shutil

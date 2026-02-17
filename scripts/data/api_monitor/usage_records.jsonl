@@ -4,3 +4,5 @@
 {"timestamp": "2026-02-08T21:12:03.151982", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 1071, "output_tokens": 232, "total_tokens": 1303, "cost": 0.0008924}
 {"timestamp": "2026-02-08T21:12:04.610781", "provider": "dashscope", "model": "qwen-plus", "endpoint": "chat", "input_tokens": 1063, "output_tokens": 292, "total_tokens": 1355, "cost": 0.0010092}
 {"timestamp": "2026-02-08T21:12:16.213599", "provider": "dashscope", "model": "qwen-max", "endpoint": "chat", "input_tokens": 760, "output_tokens": 85, "total_tokens": 845, "cost": 0.0203}
+{"timestamp": "2026-02-16T18:44:15.141592", "provider": "tavily", "model": "search", "endpoint": "search", "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost": 0.005}
+{"timestamp": "2026-02-16T18:52:54.804439", "provider": "tavily", "model": "search", "endpoint": "search", "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost": 0.005}

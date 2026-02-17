@@ -6,9 +6,15 @@ from pathlib import Path
 from typing import List, Dict, Any
 from datetime import datetime
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("FeedbackAnalyzer")
+# [v1.2.0] 统一日志配置
+try:
+    from src.observability.logger_config import configure_logging, get_logger
+    configure_logging()
+    logger = get_logger("FeedbackAnalyzer")
+except ImportError:
+    # 回退到标准 logging（独立运行时）
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger("FeedbackAnalyzer")
 
 class FeedbackAnalyzer:
     def __init__(self, feedback_file: str = "user_feedback.jsonl"):

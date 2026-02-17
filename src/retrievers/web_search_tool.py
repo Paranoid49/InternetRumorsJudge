@@ -4,10 +4,7 @@ from typing import List, Dict, Any
 from ddgs import DDGS
 from langchain_tavily import TavilySearch
 
-# 设置项目路径（v0.9.0: 使用统一路径工具）
-from src.utils.path_utils import setup_project_path
-setup_project_path()
-
+# 项目路径由 src/__init__.py 统一设置
 from src import config
 
 logger = logging.getLogger("WebSearchTool")
@@ -153,7 +150,8 @@ class WebSearchTool:
 
 if __name__ == "__main__":
     # 测试代码
-    logging.basicConfig(level=logging.INFO)
+    from src.observability.logger_config import configure_logging, get_logger
+    configure_logging()
     tool = WebSearchTool()
     res = tool.search("喝童子尿可以治新冠吗？")
     for i, r in enumerate(res):

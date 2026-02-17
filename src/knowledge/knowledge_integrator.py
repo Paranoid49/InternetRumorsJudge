@@ -4,9 +4,8 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-# 设置项目路径（v0.9.0: 使用统一路径工具）
-from src.utils.path_utils import setup_project_path, get_project_root
-setup_project_path()
+# 项目路径由 src/__init__.py 统一设置
+from src.utils.path_utils import get_project_root
 
 from src.retrievers.evidence_retriever import EvidenceKnowledgeBase
 from src import config
@@ -18,8 +17,7 @@ def _get_version_manager():
     from src.core.version_manager import VersionManager
     return VersionManager
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# [v0.7.1] 日志配置统一化 - 移除重复的 basicConfig 调用
 logger = logging.getLogger("KnowledgeIntegrator")
 
 # 获取项目根目录（v0.9.0: 使用统一路径工具）

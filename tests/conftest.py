@@ -5,6 +5,29 @@ pytest配置和共享fixtures
 """
 import sys
 import os
+
+# ============================================
+# 编码修复（必须在所有导入之前）
+# 解决 Windows 上 GBK/UTF-8 编码冲突问题
+# ============================================
+if sys.platform == 'win32':
+    # 设置标准输出/错误编码为 UTF-8
+    # 注意：pytest 会替换 stdin，所以不处理 stdin
+    if hasattr(sys.stdout, 'reconfigure') and sys.stdout.encoding != 'utf-8':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+    if hasattr(sys.stderr, 'reconfigure') and sys.stderr.encoding != 'utf-8':
+        try:
+            sys.stderr.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+
+    # 设置环境变量确保子进程也使用 UTF-8
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    os.environ['PYTHONUTF8'] = '1'
+
 import pytest
 import tempfile
 import shutil

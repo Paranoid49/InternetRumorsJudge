@@ -2,6 +2,8 @@
 检索协调器
 
 负责证据检索的协调工作
+
+[v1.1.0] 使用增强版基类功能
 """
 import logging
 from typing import List, Dict, Any, Optional
@@ -53,25 +55,26 @@ class RetrievalCoordinator(BaseCoordinator):
         Returns:
             证据列表（字典格式）
         """
-        try:
-            logger.info(f"开始检索: {query}")
-
+        def _do_retrieve():
             # 使用混合检索器
             documents = self.hybrid_retriever.search_hybrid(
                 query=query,
-                existing_local_docs=None,  # 可传递已有本地文档
+                existing_local_docs=None,
                 use_web_search=use_web_search
             )
+            return self._convert_to_dict_format(documents)
 
-            # 转换为字典格式
-            evidence_list = self._convert_to_dict_format(documents)
+        result = self._safe_operation_with_default(
+            f"检索: {query}",
+            _do_retrieve,
+            default_value=[]
+        )
 
-            logger.info(f"检索完成，获得 {len(evidence_list)} 条证据")
-            return evidence_list
+        if result:
+            stats = self.get_retrieval_stats(result)
+            self.logger.info(f"检索完成: {stats}")
 
-        except Exception as e:
-            logger.error(f"检索失败: {e}")
-            return []
+        return result or []
 
     def retrieve_with_parsed_query(
         self,
@@ -80,7 +83,7 @@ class RetrievalCoordinator(BaseCoordinator):
         local_docs: List = None
     ) -> List[Dict[str, Any]]:
         """
-        使用解析后的查询进行检索（v0.5.1 增强）
+        使用解析后的查询进行检索（v0.5.1 增强，v1.1.0 优化）
 
         Args:
             query: 原始查询
@@ -90,33 +93,39 @@ class RetrievalCoordinator(BaseCoordinator):
         Returns:
             证据列表（字典格式）
         """
-        try:
+        def _do_retrieve():
             # 如果解析词和原始词不同，用解析词补测本地库
-            parsed_query = f"{parsed_info.entity} {parsed_info.claim}" if parsed_info.entity and parsed_info.claim else ""
+            parsed_query = ""
+            if parsed_info and hasattr(parsed_info, 'entity') and hasattr(parsed_info, 'claim'):
+                if parsed_info.entity and parsed_info.claim:
+                    parsed_query = f"{parsed_info.entity} {parsed_info.claim}"
 
-            if local_docs is None:
-                local_docs = []
+            docs = local_docs if local_docs else []
 
             if parsed_query and parsed_query != query:
-                logger.info(f"尝试解析词补测本地检索: '{parsed_query}'")
-                local_docs.extend(self.hybrid_retriever.search_local(parsed_query))
+                self.logger.info(f"尝试解析词补测本地检索: '{parsed_query}'")
+                docs.extend(self.hybrid_retriever.search_local(parsed_query))
 
-            # 汇总本地结果并去重
-            unique_local_docs = self._deduplicate_docs(local_docs)
+            # 汇总本地结果并去重（使用基类增强的去重功能）
+            unique_local_docs = self._deduplicate_docs(docs, use_similarity=True)
 
-            # 调用混合检索（传入已有的本地文档，决定是否触发联网）
+            # 调用混合检索
             search_query = parsed_query if parsed_query else query
             documents = self.hybrid_retriever.search_hybrid(search_query, existing_local_docs=unique_local_docs)
 
-            # 转换为字典格式
-            evidence_list = self._convert_to_dict_format(documents)
+            return self._convert_to_dict_format(documents)
 
-            logger.info(f"检索完成，获得 {len(evidence_list)} 条证据")
-            return evidence_list
+        result = self._safe_operation_with_default(
+            f"解析词检索: {query}",
+            _do_retrieve,
+            default_value=[]
+        )
 
-        except Exception as e:
-            logger.error(f"检索失败: {e}")
-            return []
+        if result:
+            stats = self.get_retrieval_stats(result)
+            self.logger.info(f"检索完成: {stats}")
+
+        return result or []
 
     def retrieve_local_only(self, query: str) -> List[Dict[str, Any]]:
         """
@@ -128,19 +137,19 @@ class RetrievalCoordinator(BaseCoordinator):
         Returns:
             证据列表
         """
-        try:
-            logger.info(f"执行本地检索: {query}")
-
+        def _do_local_retrieve():
             # 从知识库检索
             results = self.kb.search(query, k=3)
+            return self._convert_to_dict_format(results)
 
-            # 转换为字典格式（使用基类方法）
-            evidence_list = self._convert_to_dict_format(results)
+        result = self._safe_operation_with_default(
+            f"本地检索: {query}",
+            _do_local_retrieve,
+            default_value=[]
+        )
 
-            logger.info(f"本地检索完成，获得 {len(evidence_list)} 条证据")
-            return evidence_list
+        if result:
+            self.logger.info(f"本地检索完成，获得 {len(result)} 条证据")
 
-        except Exception as e:
-            logger.error(f"本地检索失败: {e}")
-            return []
+        return result or []
 

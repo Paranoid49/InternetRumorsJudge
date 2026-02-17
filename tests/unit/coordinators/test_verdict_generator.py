@@ -95,7 +95,6 @@ class TestGenerate:
 
     def test_generate_with_assessments(
         self,
-        verdict_generator,
         sample_query,
         sample_entity,
         sample_claim,
@@ -103,75 +102,84 @@ class TestGenerate:
         sample_assessments,
         sample_final_verdict
     ):
-        """测试有评估结果时的裁决生成"""
-        with patch('src.core.coordinators.verdict_generator.summarize_truth') as mock_summarize:
-            mock_summarize.return_value = sample_final_verdict
+        """测试有评估结果时的裁决生成 - 使用依赖注入"""
+        # 创建 Mock summarizer
+        mock_summarizer = Mock()
+        mock_summarizer.summarize.return_value = sample_final_verdict
 
-            result = verdict_generator.generate(
-                query=sample_query,
-                entity=sample_entity,
-                claim=sample_claim,
-                evidence_list=sample_evidence_list,
-                assessments=sample_assessments
-            )
+        # 使用依赖注入创建生成器
+        generator = VerdictGenerator(summarizer=mock_summarizer)
 
-            assert result is not None
-            assert isinstance(result, FinalVerdict)
-            assert result.verdict == VerdictType.FALSE
-            assert result.confidence == 90
-            mock_summarize.assert_called_once()
+        result = generator.generate(
+            query=sample_query,
+            entity=sample_entity,
+            claim=sample_claim,
+            evidence_list=sample_evidence_list,
+            assessments=sample_assessments
+        )
+
+        assert result is not None
+        assert isinstance(result, FinalVerdict)
+        assert result.verdict == VerdictType.FALSE
+        assert result.confidence == 90
+        mock_summarizer.summarize.assert_called_once()
 
     def test_generate_without_assessments(
         self,
-        verdict_generator,
         sample_query,
         sample_entity,
         sample_claim,
         sample_evidence_list,
         sample_final_verdict
     ):
-        """测试无评估结果时使用兜底机制"""
-        with patch('src.core.coordinators.verdict_generator.summarize_with_fallback') as mock_fallback:
-            mock_fallback.return_value = sample_final_verdict
+        """测试无评估结果时使用兜底机制 - 使用依赖注入"""
+        # 创建 Mock summarizer
+        mock_summarizer = Mock()
+        mock_summarizer.summarize_based_on_knowledge.return_value = sample_final_verdict
 
-            result = verdict_generator.generate(
-                query=sample_query,
-                entity=sample_entity,
-                claim=sample_claim,
-                evidence_list=sample_evidence_list,
-                assessments=[]
-            )
+        # 使用依赖注入创建生成器
+        generator = VerdictGenerator(summarizer=mock_summarizer)
 
-            assert result is not None
-            mock_fallback.assert_called_once()
+        result = generator.generate(
+            query=sample_query,
+            entity=sample_entity,
+            claim=sample_claim,
+            evidence_list=sample_evidence_list,
+            assessments=[]
+        )
+
+        assert result is not None
+        mock_summarizer.summarize_based_on_knowledge.assert_called_once()
 
     def test_generate_with_none_assessments(
         self,
-        verdict_generator,
         sample_query,
         sample_entity,
         sample_claim,
         sample_evidence_list,
         sample_final_verdict
     ):
-        """测试assessments为None时使用兜底机制"""
-        with patch('src.core.coordinators.verdict_generator.summarize_with_fallback') as mock_fallback:
-            mock_fallback.return_value = sample_final_verdict
+        """测试 assessments 为 None 时使用兜底机制"""
+        # 创建 Mock summarizer
+        mock_summarizer = Mock()
+        mock_summarizer.summarize_based_on_knowledge.return_value = sample_final_verdict
 
-            result = verdict_generator.generate(
-                query=sample_query,
-                entity=sample_entity,
-                claim=sample_claim,
-                evidence_list=sample_evidence_list,
-                assessments=None
-            )
+        # 使用依赖注入创建生成器
+        generator = VerdictGenerator(summarizer=mock_summarizer)
 
-            assert result is not None
-            mock_fallback.assert_called_once()
+        result = generator.generate(
+            query=sample_query,
+            entity=sample_entity,
+            claim=sample_claim,
+            evidence_list=sample_evidence_list,
+            assessments=None
+        )
+
+        assert result is not None
+        mock_summarizer.summarize_based_on_knowledge.assert_called_once()
 
     def test_generate_exception_handling(
         self,
-        verdict_generator,
         sample_query,
         sample_entity,
         sample_claim,
@@ -179,92 +187,106 @@ class TestGenerate:
         sample_assessments
     ):
         """测试异常处理"""
-        with patch('src.core.coordinators.verdict_generator.summarize_truth') as mock_summarize:
-            mock_summarize.side_effect = Exception("生成失败")
+        # 创建会抛出异常的 Mock summarizer
+        mock_summarizer = Mock()
+        mock_summarizer.summarize.side_effect = Exception("生成失败")
 
-            result = verdict_generator.generate(
-                query=sample_query,
-                entity=sample_entity,
-                claim=sample_claim,
-                evidence_list=sample_evidence_list,
-                assessments=sample_assessments
-            )
+        # 使用依赖注入创建生成器
+        generator = VerdictGenerator(summarizer=mock_summarizer)
 
-            assert result is None
+        result = generator.generate(
+            query=sample_query,
+            entity=sample_entity,
+            claim=sample_claim,
+            evidence_list=sample_evidence_list,
+            assessments=sample_assessments
+        )
+
+        assert result is None
 
     def test_generate_full_claim_construction(
         self,
-        verdict_generator,
         sample_query,
+        sample_entity,
+        sample_claim,
         sample_evidence_list,
         sample_assessments,
         sample_final_verdict
     ):
-        """测试完整claim的构造"""
-        with patch('src.core.coordinators.verdict_generator.summarize_truth') as mock_summarize:
-            mock_summarize.return_value = sample_final_verdict
+        """测试完整 claim 的构建"""
+        # 创建 Mock summarizer
+        mock_summarizer = Mock()
+        mock_summarizer.summarize.return_value = sample_final_verdict
 
-            # 有entity和claim
-            verdict_generator.generate(
-                query=sample_query,
-                entity="维生素C",
-                claim="可以预防感冒",
-                evidence_list=sample_evidence_list,
-                assessments=sample_assessments
-            )
+        # 使用依赖注入创建生成器
+        generator = VerdictGenerator(summarizer=mock_summarizer)
 
-            # 验证传入的claim是完整的
-            call_args = mock_summarize.call_args[0]
-            assert "维生素C" in call_args[0]
-            assert "可以预防感冒" in call_args[0]
+        generator.generate(
+            query=sample_query,
+            entity=sample_entity,
+            claim=sample_claim,
+            evidence_list=sample_evidence_list,
+            assessments=sample_assessments
+        )
+
+        # 验证完整 claim 被正确构建
+        called_args = mock_summarizer.summarize.call_args
+        full_claim = called_args[0][0]  # 第一个位置参数
+        assert sample_entity in full_claim
+        assert sample_claim in full_claim
 
     def test_generate_fallback_to_query(
         self,
-        verdict_generator,
         sample_query,
         sample_evidence_list,
-        sample_assessments,
         sample_final_verdict
     ):
-        """测试fallback到原始查询"""
-        with patch('src.core.coordinators.verdict_generator.summarize_truth') as mock_summarize:
-            mock_summarize.return_value = sample_final_verdict
+        """测试当 entity 和 claim 都为 None 时回退到 query"""
+        # 创建 Mock summarizer
+        mock_summarizer = Mock()
+        mock_summarizer.summarize_based_on_knowledge.return_value = sample_final_verdict
 
-            # entity和claim都为None
-            verdict_generator.generate(
-                query=sample_query,
-                entity=None,
-                claim=None,
-                evidence_list=sample_evidence_list,
-                assessments=sample_assessments
-            )
+        # 使用依赖注入创建生成器
+        generator = VerdictGenerator(summarizer=mock_summarizer)
 
-            # 验证使用原始查询
-            call_args = mock_summarize.call_args[0]
-            assert call_args[0] == sample_query
+        generator.generate(
+            query=sample_query,
+            entity=None,
+            claim=None,
+            evidence_list=sample_evidence_list,
+            assessments=[]
+        )
+
+        # 验证回退到 query
+        called_args = mock_summarizer.summarize_based_on_knowledge.call_args
+        full_claim = called_args[0][0]
+        assert full_claim == sample_query
 
     def test_generate_returns_none_on_summarize_failure(
         self,
-        verdict_generator,
         sample_query,
         sample_entity,
         sample_claim,
         sample_evidence_list,
         sample_assessments
     ):
-        """测试summarize返回None时的情况"""
-        with patch('src.core.coordinators.verdict_generator.summarize_truth') as mock_summarize:
-            mock_summarize.return_value = None
+        """测试 summarize 返回 None 时的处理"""
+        # 创建返回 None 的 Mock summarizer
+        mock_summarizer = Mock()
+        mock_summarizer.summarize.return_value = None
 
-            result = verdict_generator.generate(
-                query=sample_query,
-                entity=sample_entity,
-                claim=sample_claim,
-                evidence_list=sample_evidence_list,
-                assessments=sample_assessments
-            )
+        # 使用依赖注入创建生成器
+        generator = VerdictGenerator(summarizer=mock_summarizer)
 
-            assert result is None
+        result = generator.generate(
+            query=sample_query,
+            entity=sample_entity,
+            claim=sample_claim,
+            evidence_list=sample_evidence_list,
+            assessments=sample_assessments
+        )
+
+        assert result is None
 
 
 # ============================================

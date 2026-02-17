@@ -24,19 +24,11 @@ try:
 except ImportError:
     pass
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# [v1.2.0] 统一日志配置 - 使用 observability 模块的配置
+from src.observability.logger_config import configure_logging, get_logger
+configure_logging()  # 使用环境变量配置
 
-# 配置结构化日志
-try:
-    from src.observability import configure_logging
-    configure_logging(log_level="INFO", json_output=False)  # 开发环境使用可读格式
-except ImportError:
-    pass  # 回退到标准 logging
-
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("RumorJudgeEngine")
+logger = get_logger("RumorJudgeEngine")
 
 # --- 核心数据模型 (Core Data Models) ---
 
@@ -93,7 +85,15 @@ class UnifiedVerificationResult(BaseModel):
         ))
 
 # --- 导入业务组件 ---
-try:
+# [v0.7.2] 重构导入逻辑：消除重复代码，提高可维护性
+
+def _import_core_components():
+    """
+    统一导入核心业务组件
+
+    将所有必需的组件导入集中在此函数中，避免重复代码。
+    如果导入失败，将抛出 ImportError。
+    """
     from src import config
     from src.analyzers.query_parser import build_chain as build_parser_chain
     from src.analyzers.query_parser import QueryAnalysis
@@ -105,25 +105,70 @@ try:
     from src.knowledge.knowledge_integrator import KnowledgeIntegrator
     from src.retrievers.hybrid_retriever import HybridRetriever
 
-    # 导入可观测性模块（可选）
+    return {
+        'config': config,
+        'build_parser_chain': build_parser_chain,
+        'QueryAnalysis': QueryAnalysis,
+        'EvidenceKnowledgeBase': EvidenceKnowledgeBase,
+        'analyze_evidence': analyze_evidence,
+        'EvidenceAssessment': EvidenceAssessment,
+        'summarize_truth': summarize_truth,
+        'FinalVerdict': FinalVerdict,
+        'VerdictType': VerdictType,
+        'summarize_with_fallback': summarize_with_fallback,
+        'CacheManager': CacheManager,
+        'WebSearchTool': WebSearchTool,
+        'KnowledgeIntegrator': KnowledgeIntegrator,
+        'HybridRetriever': HybridRetriever,
+    }
+
+def _import_observability():
+    """
+    导入可观测性模块（可选）
+
+    Returns:
+        tuple: (是否可用, 模块组件字典)
+    """
     try:
         from src.observability import get_logger, get_metrics_collector, RequestContext, StageTimer
-        OBSERVABILITY_AVAILABLE = True
+        return True, {
+            'get_logger': get_logger,
+            'get_metrics_collector': get_metrics_collector,
+            'RequestContext': RequestContext,
+            'StageTimer': StageTimer,
+        }
     except ImportError:
-        OBSERVABILITY_AVAILABLE = False
+        return False, {}
+
+# 执行导入
+try:
+    _components = _import_core_components()
+    # 将组件添加到全局命名空间（保持向后兼容）
+    config = _components['config']
+    build_parser_chain = _components['build_parser_chain']
+    QueryAnalysis = _components['QueryAnalysis']
+    EvidenceKnowledgeBase = _components['EvidenceKnowledgeBase']
+    analyze_evidence = _components['analyze_evidence']
+    EvidenceAssessment = _components['EvidenceAssessment']
+    summarize_truth = _components['summarize_truth']
+    FinalVerdict = _components['FinalVerdict']
+    VerdictType = _components['VerdictType']
+    summarize_with_fallback = _components['summarize_with_fallback']
+    CacheManager = _components['CacheManager']
+    WebSearchTool = _components['WebSearchTool']
+    KnowledgeIntegrator = _components['KnowledgeIntegrator']
+    HybridRetriever = _components['HybridRetriever']
+
+    # 导入可观测性模块（可选）
+    OBSERVABILITY_AVAILABLE, _observability = _import_observability()
+    if OBSERVABILITY_AVAILABLE:
+        get_logger = _observability['get_logger']
+        get_metrics_collector = _observability['get_metrics_collector']
+        RequestContext = _observability['RequestContext']
+        StageTimer = _observability['StageTimer']
+
 except ImportError as e:
-    from src import config
-    from src.analyzers.query_parser import build_chain as build_parser_chain
-    from src.analyzers.query_parser import QueryAnalysis
-    from src.retrievers.evidence_retriever import EvidenceKnowledgeBase
-    from src.analyzers.evidence_analyzer import analyze_evidence, EvidenceAssessment
-    from src.analyzers.truth_summarizer import summarize_truth, FinalVerdict, VerdictType, summarize_with_fallback
-    from src.core.cache_manager import CacheManager
-    from src.retrievers.web_search_tool import WebSearchTool
-    from src.knowledge.knowledge_integrator import KnowledgeIntegrator
-    from src.retrievers.hybrid_retriever import HybridRetriever
-except ImportError as e:
-    logger.error(f"组件导入失败: {e}")
+    logger.error(f"核心组件导入失败: {e}")
     raise
 
 class RumorJudgeEngine:
@@ -498,7 +543,7 @@ class RumorJudgeEngine:
         logger.info("阶段2: 证据检索")
         retrieval_start = datetime.now()
 
-        # [v0.5.1] 使用带解析词的检索
+        # [v0.7.1] 统一使用 retrieve_with_parsed_query，确保复用已检索的本地文档
         if parsed:
             evidence_list = self._retrieval_coordinator.retrieve_with_parsed_query(
                 query=query,
@@ -506,8 +551,15 @@ class RumorJudgeEngine:
                 local_docs=local_docs
             )
         else:
-            # 回退到简单检索
-            evidence_list = self._retrieval_coordinator.retrieve(query=query)
+            # [v0.7.1] 即使解析失败，也复用已检索的 local_docs
+            # 创建一个空的 parsed_info 对象来复用现有逻辑
+            from types import SimpleNamespace
+            empty_parsed = SimpleNamespace(entity=None, claim=None, category=None)
+            evidence_list = self._retrieval_coordinator.retrieve_with_parsed_query(
+                query=query,
+                parsed_info=empty_parsed,
+                local_docs=local_docs
+            )
 
         # 获取检索统计
         stats = self._retrieval_coordinator.get_retrieval_stats(evidence_list)

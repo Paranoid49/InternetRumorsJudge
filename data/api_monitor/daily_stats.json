@@ -8,5 +8,15 @@
     "total_cost": 0.00028000000000000003,
     "total_tokens": 300,
     "api_calls": 2
+  },
+  "2026-02-14": {
+    "total_cost": 0.00042,
+    "total_tokens": 1301,
+    "api_calls": 4
+  },
+  "2026-02-16": {
+    "total_cost": 0.0014279999999999991,
+    "total_tokens": 3040,
+    "api_calls": 50
   }
 }

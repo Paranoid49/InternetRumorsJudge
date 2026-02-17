@@ -13,9 +13,11 @@ import pandas as pd
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("WebInterface")
+# [v1.2.0] 统一日志配置
+from src.observability.logger_config import configure_logging, get_logger
+configure_logging()
+
+logger = get_logger("WebInterface")
 
 # API Configuration
 API_BASE_URL = os.getenv("RUMOR_API_URL", "http://localhost:8000")

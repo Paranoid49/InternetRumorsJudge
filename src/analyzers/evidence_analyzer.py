@@ -1,13 +1,10 @@
 import logging
 import concurrent.futures
-from typing import List, Literal, Dict, Optional
+from typing import List, Literal, Dict, Optional, Tuple
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-# 设置项目路径（v0.9.0: 使用统一路径工具）
-from src.utils.path_utils import setup_project_path
-setup_project_path()
-
+# 项目路径由 src/__init__.py 统一设置
 from src import config
 from src.utils.llm_factory import create_analyzer_llm
 
@@ -120,54 +117,272 @@ class EvidenceAnalyzer:
         self.enable_prefilter = getattr(config, 'ENABLE_EVIDENCE_PREFILTER', True)
         self.prefilter_max_evidence = getattr(config, 'PREFILTER_MAX_EVIDENCE', 5)
         self.prefilter_min_similarity = getattr(config, 'PREFILTER_MIN_SIMILARITY', 0.3)
+        # [v0.7.2] 动态过滤配置
+        self.high_quality_threshold = getattr(config, 'PREFILTER_HIGH_QUALITY_THRESHOLD', 0.7)
+        self.min_evidence_count = getattr(config, 'PREFILTER_MIN_EVIDENCE_COUNT', 2)
+
+    def _calculate_evidence_score(self, evidence: Dict) -> float:
+        """
+        [v0.7.2] 计算证据的综合质量分数
+
+        评分维度：
+        1. 相似度分数 (0-1)
+        2. 来源类型权重 (本地 +0.2)
+        3. 是否为自动生成内容 (AUTO_GEN_* 降权 -0.1)
+
+        Returns:
+            综合质量分数 (0.0-1.3)
+        """
+        score = 0.0
+        metadata = evidence.get('metadata', {})
+
+        # 1. 相似度分数
+        similarity = metadata.get('similarity', 0.5)
+        if similarity == 0.0:  # 联网搜索结果无相似度，给默认值
+            similarity = 0.5
+        score += similarity
+
+        # 2. 本地来源加权
+        if metadata.get('type') == 'local':
+            score += 0.2
+
+        # 3. 自动生成内容降权
+        source = metadata.get('source', '')
+        if 'AUTO_GEN_' in str(source):
+            score -= 0.1
+
+        return max(0.0, score)
 
     def _prefilter_evidence(self, claim: str, evidence_list: List[Dict]) -> List[Dict]:
         """
-        预过滤证据，基于简单规则快速筛选
+        预过滤证据，基于质量分数智能筛选
 
-        规则：
-        1. 过滤相似度过低的证据
-        2. 限制最大证据数量
-        3. 优先保留本地证据（权威性更高）
+        [v0.7.2] 优化策略：
+        1. 计算每条证据的综合质量分数
+        2. 根据高质量证据比例动态调整保留数量
+        3. 确保最少保留 min_evidence_count 条证据（如果有）
+        4. 优先保留高质量证据
+
+        [v1.1.0] 新增：
+        5. 立场多样性保证
         """
         if not self.enable_prefilter:
             return evidence_list
 
-        logger.info(f"预过滤: {len(evidence_list)} 条证据 -> ...")
+        original_count = len(evidence_list)
+        logger.info(f"预过滤: {original_count} 条证据 -> ...")
+
+        if original_count == 0:
+            return []
 
         # 1. 过滤相似度过低的证据
         filtered = []
         for ev in evidence_list:
             similarity = ev.get('metadata', {}).get('similarity', 0.0)
-            # 如果有similarity字段，过滤低于阈值的
+            # 联网搜索结果(相似度为0)不过滤
             if similarity >= self.prefilter_min_similarity or similarity == 0.0:
                 filtered.append(ev)
 
-        if len(filtered) < len(evidence_list):
-            logger.info(f"相似度过滤: {len(evidence_list)} -> {len(filtered)}")
+        if len(filtered) < original_count:
+            logger.info(f"相似度过滤: {original_count} -> {len(filtered)}")
 
-        # 2. 优先保留本地证据（权威性更高）
-        local_evidence = [ev for ev in filtered if ev.get('metadata', {}).get('type') == 'local']
-        web_evidence = [ev for ev in filtered if ev.get('metadata', {}).get('type') == 'web']
+        if not filtered:
+            return []
 
-        # 3. 限制最大数量（本地证据优先）
-        selected = local_evidence[:self.prefilter_max_evidence]
-        remaining_slots = self.prefilter_max_evidence - len(selected)
+        # 2. 快速预分类立场（基于关键词）
+        preclassified = self._quick_classify_stance(claim, filtered)
 
-        if remaining_slots > 0 and web_evidence:
-            selected.extend(web_evidence[:remaining_slots])
+        # 3. 计算每条证据的质量分数
+        scored_evidence = [
+            (ev, self._calculate_evidence_score(ev))
+            for ev in filtered
+        ]
+        scored_evidence.sort(key=lambda x: x[1], reverse=True)
 
-        logger.info(f"预过滤完成: {len(evidence_list)} -> {len(selected)} 条证据 (节省 {len(evidence_list) - len(selected)} 条LLM分析)")
+        # 4. 动态确定保留数量
+        high_quality_count = sum(1 for _, score in scored_evidence if score >= self.high_quality_threshold)
+
+        # 高质量证据多时，减少分析数量；质量参差不齐时，保留更多
+        if high_quality_count >= 3:
+            target_count = min(4, len(scored_evidence))
+            reason = f"高质量证据充足({high_quality_count}条)"
+        elif high_quality_count >= 1:
+            target_count = min(self.prefilter_max_evidence, len(scored_evidence))
+            reason = f"混合质量证据"
+        else:
+            target_count = min(self.prefilter_max_evidence + 1, len(scored_evidence))
+            reason = "证据质量普遍较低"
+
+        # 5. 确保最少证据数量
+        target_count = max(self.min_evidence_count, min(target_count, len(scored_evidence)))
+
+        # 6. 选择证据，确保立场多样性
+        selected = self._select_with_diversity(
+            scored_evidence,
+            preclassified,
+            target_count,
+            filtered
+        )
+
+        # 统计选中证据的立场分布
+        stance_counts = {'supporting': 0, 'opposing': 0, 'neutral': 0}
+        for ev in selected:
+            idx = filtered.index(ev) if ev in filtered else -1
+            if idx >= 0:
+                stance = preclassified.get(idx, 'neutral')
+                stance_counts[stance] = stance_counts.get(stance, 0) + 1
+
+        saved_count = len(evidence_list) - len(selected)
+        avg_score = sum(self._calculate_evidence_score(ev) for ev in selected) / len(selected) if selected else 0
+
+        logger.info(
+            f"预过滤完成: {original_count} -> {len(selected)} 条证据 "
+            f"(支持:{stance_counts['supporting']}, 反对:{stance_counts['opposing']}, "
+            f"中立:{stance_counts['neutral']}, 平均分:{avg_score:.2f}, 节省{saved_count}条LLM调用)"
+        )
 
         return selected
 
-    def analyze(self, claim: str, evidence_list: List[Dict], chunk_size: int = 2) -> List[EvidenceAssessment]:
+    def _quick_classify_stance(self, claim: str, evidence_list: List[Dict]) -> Dict[int, str]:
         """
-        执行分析，如果证据较多则采用并行处理以提高速度。
+        [v1.1.0] 快速预分类证据立场
 
-        优化: 降低 chunk_size 到 2，触发更积极的并行策略
+        基于关键词匹配的轻量级分类，用于预过滤阶段。
+        不调用 LLM，仅做初步估计。
 
-        新增：预过滤机制，降低API成本
+        Args:
+            claim: 主张内容
+            evidence_list: 证据列表
+
+        Returns:
+            {索引: 立场} 字典，立场为 'supporting'/'opposing'/'neutral'
+        """
+        result = {}
+
+        # 反对关键词（辟谣/否定）
+        opposing_keywords = [
+            '错误', '不正确', '虚假', '谣言', '辟谣', '不实',
+            '误导', '夸大', '没有证据', '无法证实', '否定',
+            '并非', '不可能', '没有科学依据', '假的', '伪造',
+            '不属实', '误解', '混淆', '错误信息'
+        ]
+
+        # 支持关键词（确认/证明）
+        supporting_keywords = [
+            '证实', '确实', '正确', '真实', '研究显示', '实验证明',
+            '专家指出', '科学表明', '数据表明', '已确认', '证明',
+            '确实存在', '是真实的', '有据可查'
+        ]
+
+        claim_lower = claim.lower()
+
+        for i, ev in enumerate(evidence_list):
+            text = ev.get('text', ev.get('content', '')).lower()
+            source = ev.get('source', ev.get('metadata', {}).get('source', '')).lower()
+
+            # 计算关键词匹配分数
+            opposing_score = sum(1 for kw in opposing_keywords if kw in text)
+            supporting_score = sum(1 for kw in supporting_keywords if kw in text)
+
+            # 辟谣来源加权
+            if any(s in source for s in ['辟谣', '谣言', 'false', 'myth', 'piyao']):
+                opposing_score += 2
+
+            # 官方/权威来源加权
+            if any(s in source for s in ['gov', '官方', '权威', 'who', 'cdc']):
+                supporting_score += 1
+
+            # 判断立场
+            if opposing_score > supporting_score + 1:
+                result[i] = 'opposing'
+            elif supporting_score > opposing_score + 1:
+                result[i] = 'supporting'
+            else:
+                result[i] = 'neutral'
+
+        return result
+
+    def _select_with_diversity(
+        self,
+        scored_evidence: List[Tuple[Dict, float]],
+        preclassified: Dict[int, str],
+        target_count: int,
+        original_list: List[Dict]
+    ) -> List[Dict]:
+        """
+        [v1.1.0] 确保立场多样性的证据选择
+
+        Args:
+            scored_evidence: 已评分的证据列表 [(证据, 分数), ...]
+            preclassified: 预分类结果 {索引: 立场}
+            target_count: 目标数量
+            original_list: 原始证据列表（用于获取索引）
+
+        Returns:
+            选中的证据列表
+        """
+        selected = []
+        selected_indices = set()
+
+        # 按立场分组
+        by_stance = {'supporting': [], 'opposing': [], 'neutral': []}
+        for ev, score in scored_evidence:
+            idx = original_list.index(ev) if ev in original_list else -1
+            stance = preclassified.get(idx, 'neutral')
+            by_stance[stance].append((ev, score, idx))
+
+        # 先选高质量证据（不限立场）
+        for ev, score in scored_evidence:
+            if len(selected) >= target_count:
+                break
+            idx = original_list.index(ev) if ev in original_list else -1
+            if idx not in selected_indices and score >= self.high_quality_threshold:
+                selected.append(ev)
+                selected_indices.add(idx)
+
+        # 确保每个非中立立场至少有1条（如果存在）
+        for stance in ['opposing', 'supporting']:
+            if len(selected) >= target_count:
+                break
+
+            # 检查是否已有该立场的证据
+            has_stance = any(
+                preclassified.get(original_list.index(ev)) == stance
+                for ev in selected if ev in original_list
+            )
+
+            if not has_stance and by_stance[stance]:
+                # 添加最高分的该立场证据
+                for ev, score, idx in by_stance[stance]:
+                    if idx not in selected_indices:
+                        selected.append(ev)
+                        selected_indices.add(idx)
+                        break
+
+        # 补充到目标数量
+        for ev, score in scored_evidence:
+            if len(selected) >= target_count:
+                break
+            idx = original_list.index(ev) if ev in original_list else -1
+            if idx not in selected_indices:
+                selected.append(ev)
+                selected_indices.add(idx)
+
+        return selected
+
+    def analyze(self, claim: str, evidence_list: List[Dict], chunk_size: int = None) -> List[EvidenceAssessment]:
+        """
+        执行证据分析，统一使用单证据并行策略。
+
+        [v0.7.1 优化] 简化并发策略：
+        - 移除分片并行逻辑，统一使用单证据并行
+        - LLM调用是IO密集型，单证据并行比批量分片更高效
+        - 消除边界情况（5-6个证据）的性能抖动
+
+        特性：
+        - 预过滤机制：降低API成本
+        - 动态并行度：根据任务数量和CPU核心数自动调整
+        - 容错处理：单个证据分析失败不影响其他
         """
         if not evidence_list:
             logger.warning("分析中止: 传入的证据列表为空。")
@@ -182,53 +397,27 @@ class EvidenceAnalyzer:
 
         count = len(evidence_list)
 
-        # 优化: 优先使用单证据并行分析（适用于 2-5 个证据）
-        if 2 <= count <= 5:
-            logger.info(f"证据数量({count})适合单证据并行分析")
-            return self._analyze_parallel_single(claim, evidence_list)
+        # 单证据时直接分析，无需并行
+        if count == 1:
+            logger.info(f"单证据，直接分析")
+            result = self._analyze_single_evidence(claim, evidence_list[0], 0)
+            return [result] if result else []
 
-        if count <= chunk_size:
-            # 数量较少，直接单次请求
-            return self._analyze_batch(claim, evidence_list, offset=0)
-        
-        # 数量较多，分片并行分析
-        logger.info(f"证据数量({count})超过分片阈值({chunk_size})，启动并行分析...")
-        chunks = [evidence_list[i:i + chunk_size] for i in range(0, count, chunk_size)]
-        
-        # [v0.6.0] 使用动态并行度配置
-        if PARALLELISM_CONFIG_AVAILABLE:
-            max_workers = get_parallelism_config().get_adaptive_workers(
-                task_count=len(chunks),
-                task_type='evidence_analyzer',
-                min_workers=1
-            )
-            logger.info(f"动态并行度: {max_workers} (批次数: {len(chunks)})")
-        else:
-            max_workers = min(len(chunks), 5)  # 回退到硬编码值
-
-        all_assessments = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_chunk = {
-                executor.submit(self._analyze_batch, claim, chunk, i * chunk_size): i
-                for i, chunk in enumerate(chunks)
-            }
-            
-            for future in concurrent.futures.as_completed(future_to_chunk):
-                try:
-                    batch_results = future.result()
-                    all_assessments.extend(batch_results)
-                except Exception as e:
-                    logger.error(f"分片分析失败: {e}")
-        
-        # 按 ID 排序确保顺序一致
-        all_assessments.sort(key=lambda x: x.id)
-        return all_assessments
+        # 多证据统一使用单证据并行分析
+        logger.info(f"证据数量({count})，启用单证据并行分析")
+        return self._analyze_parallel_single(claim, evidence_list)
 
     def _analyze_parallel_single(self, claim: str, evidence_list: List[Dict]) -> List[EvidenceAssessment]:
         """
-        每个证据单独并行分析（优化方案1）
+        单证据并行分析（v0.7.1 统一策略）
 
-        适用于 2-5 个证据的场景，每个证据独立并行分析
+        每个证据独立并行分析，适用于任意数量的证据场景。
+
+        优势：
+        - IO密集型任务，并行效率高
+        - 单个证据失败不影响其他
+        - 避免批量分析时的相互干扰
+        - 消除边界情况的性能抖动
         """
         if not evidence_list:
             return []

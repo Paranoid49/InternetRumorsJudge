@@ -4,16 +4,12 @@ from enum import Enum
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 
-# 设置项目路径（v0.9.0: 使用统一路径工具）
-from src.utils.path_utils import setup_project_path
-setup_project_path()
-
+# 项目路径由 src/__init__.py 统一设置
 from src import config
 from src.analyzers.evidence_analyzer import EvidenceAssessment
 from src.utils.llm_factory import create_summarizer_llm
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# [v0.7.1] 日志配置统一化 - 移除重复的 basicConfig 调用
 logger = logging.getLogger(__name__)
 
 class VerdictType(str, Enum):

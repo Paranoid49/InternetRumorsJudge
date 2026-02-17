@@ -4,10 +4,7 @@ from typing import Literal
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-# 设置项目路径（v0.9.0: 使用统一路径工具）
-from src.utils.path_utils import setup_project_path
-setup_project_path()
-
+# 项目路径由 src/__init__.py 统一设置
 from src import config
 from src.utils.llm_factory import create_parser_llm
 

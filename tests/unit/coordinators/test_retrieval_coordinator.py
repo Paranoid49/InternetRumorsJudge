@@ -315,11 +315,25 @@ class TestConvertToDictFormat:
         assert result[1]['metadata']['type'] == 'web'
 
     def test_convert_dict_documents(self, retrieval_coordinator, sample_evidence_list):
-        """测试转换已经是字典格式的文档"""
+        """测试转换已经是字典格式的文档
+
+        [v1.1.0] 更新：增强版 _convert_to_dict_format 会：
+        - 复制字典（避免修改原对象）
+        - 添加 id 字段（用于证据追踪）
+        所以不要求精确相等，而是验证关键字段
+        """
         result = retrieval_coordinator._convert_to_dict_format(sample_evidence_list)
 
         assert len(result) == 2
-        assert result == sample_evidence_list
+        # 验证关键字段存在且正确（不要求精确相等）
+        for i, ev in enumerate(result):
+            assert 'content' in ev
+            assert 'text' in ev
+            assert 'metadata' in ev
+            assert ev['id'] == i + 1  # 新增的 id 字段
+            # 验证内容与原始数据一致
+            assert ev['content'] == sample_evidence_list[i]['content']
+            assert ev['metadata']['source'] == sample_evidence_list[i]['metadata']['source']
 
     def test_convert_mixed_format(self, retrieval_coordinator, sample_documents):
         """测试混合格式转换"""
